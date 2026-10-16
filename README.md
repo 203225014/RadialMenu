@@ -2,7 +2,7 @@
 
 <img src="assets/logo-256.png" width="128" alt="Логотип">
 
-Перенос Python-версии (ветка `python-version`) на Rust: тот же внешний вид и логика
+Перенос Python-версии (ветка `python-version`; прежняя C#-версия — в `main`) на Rust: тот же внешний вид и логика
 (стеклянные кнопки в стиле Actions Ring, веер подменю, подписи, громкость колесом, заметка
 для Obsidian), но без Python/tkinter/Pillow — один `exe` около 1 МБ.
 
@@ -13,7 +13,6 @@
 ## Сборка и запуск (Windows)
 
 ```
-cd rust
 cargo build --release          # RadialMenu.exe — в target\release
 cargo test                     # тесты переносимого ядра (идут и на Linux/macOS)
 ```

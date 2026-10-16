@@ -1,6 +1,1 @@
-bin/
-obj/
-publish/
-installer/Output/
-rust/target/
-rust/Cargo.lock.bak
+/target/
