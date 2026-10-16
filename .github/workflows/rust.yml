@@ -1,0 +1,27 @@
+name: rust
+
+on:
+  push:
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+  pull_request:
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo test --release
+      - run: cargo clippy --all-targets
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RadialMenu-windows
+          path: rust/target/release/RadialMenu.exe
