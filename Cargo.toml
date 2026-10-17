@@ -43,6 +43,7 @@ features = [
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_Storage_FileSystem",
+    "Win32_Storage_Xps",
     "Win32_System_ProcessStatus",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Registry",

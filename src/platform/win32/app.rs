@@ -210,6 +210,21 @@ fn save_settings(new: Settings, autostart_on: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Папку хранилища выбрали прямо в окне заметки — запомнить её в настройках.
+fn set_vault(path: &str) {
+    with_app(|app| {
+        let mut s = app.settings.clone();
+        s.vault = path.to_string();
+        match files::save_settings(&s) {
+            Ok(()) => {
+                app.settings = s;
+                app.stamps.0 = files::mtime(&files::config_path()); // свою запись не перечитываем
+            }
+            Err(e) => util::log_error(&format!("сохранение папки хранилища: {e}")),
+        }
+    });
+}
+
 fn open_settings() {
     let Some((s, status)) = with_app(|app| {
         let status = app.menu_error.as_ref().map(|e| Status {
@@ -361,7 +376,7 @@ fn execute(action: Action) {
         Action::Explorer => send::explorer(),
         Action::Note => {
             if let Some((vault, theme)) = with_app(|app| (app.settings.vault.clone(), app.theme.theme())) {
-                note::open(&vault, theme);
+                note::open(&vault, theme, set_vault);
             }
         }
         Action::Settings => open_settings(),
