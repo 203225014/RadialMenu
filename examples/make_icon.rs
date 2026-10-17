@@ -84,16 +84,20 @@ fn tile(rect: f32, rx: f32, off: f32) -> tiny_skia::Path {
     pb.finish().unwrap()
 }
 
-/// Рисует логотип в квадрат `px`×`px` (координаты макета — 256×256).
-fn draw(px: u32) -> Pixmap {
+/// Рисует логотип в квадрат `px`×`px` (координаты макета — 256×256); `target` — размер, в котором
+/// значок увидят (мелкие рисуются в 4× и сжимаются, а упрощение зависит от конечного размера).
+fn draw(px: u32, target: u32) -> Pixmap {
     let mut pm = Pixmap::new(px, px).unwrap();
     let tf = Transform::from_scale(px as f32 / 256.0, px as f32 / 256.0);
-    let (ring_w, dot_y, detail) = match px {
+    let (ring_w, dot_y, detail) = match target {
         0..=16 => (34.0, 124.0, 0),
         17..=24 => (32.0, 124.0, 1),
         25..=32 => (30.0, 118.0, 2),
         _ => (30.0, 118.0, 3),
     };
+    // в трее значок крошечный: рисунок увеличиваем, чтобы кольцо занимало всю клетку, как у соседей
+    let k = if target <= 40 { 1.24 } else { 1.0 };
+    let tfg = tf.pre_translate(128.0, 128.0).pre_scale(k, k).pre_translate(-128.0, -128.0);
     fill(
         &mut pm,
         &tile(256.0, 58.0, 0.0),
@@ -121,27 +125,27 @@ fn draw(px: u32) -> Pixmap {
         } else {
             seg
         };
-        stroke(&mut pm, &path(d), c, ring_w, true, tf);
+        stroke(&mut pm, &path(d), c, ring_w, true, tfg);
     }
     match detail {
         0 => fill(
             &mut pm,
             &circle(128.0, dot_y, 20.0),
             rgba(0x4c, 0x7d, 0xff, 1.0),
-            tf,
+            tfg,
         ),
         1 => {
             fill(
                 &mut pm,
                 &circle(128.0, dot_y, 20.0),
                 rgba(0xb3, 0xcc, 0xff, 1.0),
-                tf,
+                tfg,
             );
             fill(
                 &mut pm,
                 &circle(128.0, dot_y, 16.0),
                 rgba(0x4c, 0x7d, 0xff, 1.0),
-                tf,
+                tfg,
             );
         }
         _ => {
@@ -149,7 +153,7 @@ fn draw(px: u32) -> Pixmap {
                 &mut pm,
                 &circle(128.0, 128.0, 22.0),
                 rgba(0xcc, 0xcc, 0xcc, 0.75),
-                tf,
+                tfg,
             );
             if detail == 3 {
                 stroke(
@@ -158,20 +162,20 @@ fn draw(px: u32) -> Pixmap {
                     rgba(0xff, 0xff, 0xff, 0.9),
                     2.0,
                     false,
-                    tf,
+                    tfg,
                 );
             }
             fill(
                 &mut pm,
                 &circle(128.0, dot_y, 10.25),
                 rgba(0xb3, 0xcc, 0xff, 1.0),
-                tf,
+                tfg,
             );
             fill(
                 &mut pm,
                 &circle(128.0, dot_y, 7.75),
                 rgba(0x4c, 0x7d, 0xff, 1.0),
-                tf,
+                tfg,
             );
         }
     }
@@ -181,9 +185,9 @@ fn draw(px: u32) -> Pixmap {
 /// Мелкие размеры рисуем в 4× и усредняем — края чище, чем у прямой растеризации.
 fn render(px: u32) -> Pixmap {
     if px >= 64 {
-        return draw(px);
+        return draw(px, px);
     }
-    let big = draw(px * 4);
+    let big = draw(px * 4, px);
     let mut out = Pixmap::new(px, px).unwrap();
     let (src, dst) = (big.data(), out.data_mut());
     for y in 0..px as usize {
@@ -217,7 +221,7 @@ fn png_bytes(pm: &Pixmap) -> Vec<u8> {
 
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "assets".into()));
-    let sizes = [16u32, 24, 32, 48, 64, 128, 256];
+    let sizes = [16u32, 20, 24, 28, 32, 40, 48, 64, 128, 256];
     let frames: Vec<Vec<u8>> = sizes.iter().map(|&s| png_bytes(&render(s))).collect();
     let mut ico = Vec::new();
     ico.extend_from_slice(&[0, 0, 1, 0]);
@@ -232,7 +236,7 @@ fn main() {
     }
     frames.iter().for_each(|f| ico.extend_from_slice(f));
     std::fs::write(dir.join("RadialMenu.ico"), &ico).unwrap();
-    std::fs::write(dir.join("logo-256.png"), &frames[6]).unwrap();
+    std::fs::write(dir.join("logo-256.png"), frames.last().unwrap()).unwrap();
     let _ = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
     eprintln!("RadialMenu.ico: {} байт, размеры {:?}", ico.len(), sizes);
 }
