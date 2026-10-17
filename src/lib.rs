@@ -1,25 +1,19 @@
 //! Радиальное меню на боковой кнопке мыши.
 //!
-//! Слои:
-//! * переносимое ядро (`geom`, `metrics`, `menu`, `layout`, `nav`, `anim`, `style`,
-//!   `engine`, `raster`, `compose`, `notes`, `config`) — чистая логика и программная графика,
-//!   полностью покрыта тестами и работает на любой ОС;
-//! * `platform` — тонкая обвязка Win32 (хук мыши, окно-слой, ввод клавиш, звук, заметка, трей).
+//! Слои (каждый зависит только от тех, что выше):
+//! * `model` — данные: меню и его файл, действия, настройки, тема;
+//! * `engine` — логика меню: раскладка, выбор по направлению, анимация, сборка кадра;
+//! * `render` — графика: иконки, маски, композитор, палитры тем, рисование окон;
+//! * `notes` — заметки Obsidian: хранилище и правка текста;
+//! * `ui` — окна без ОС (настройки): раскладка, события, отрисовка;
+//! * `platform` — связь с ОС: тема системы (везде) и обвязка Win32 (только Windows).
+//!
+//! Всё, кроме `platform::win32`, переносимо и покрыто тестами.
 
-pub mod action;
-pub mod anim;
-pub mod assets;
-pub mod compose;
-pub mod config;
 pub mod engine;
-pub mod geom;
-pub mod layout;
-pub mod menu;
-pub mod metrics;
-pub mod nav;
+pub mod model;
 pub mod notes;
-pub mod raster;
-pub mod style;
+pub mod render;
+pub mod ui;
 
-#[cfg(windows)]
 pub mod platform;

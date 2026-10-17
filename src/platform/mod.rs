@@ -1,12 +1,10 @@
-//! Windows-обвязка: всё, что говорит с системой. Логика меню — в переносимом ядре.
+//! Слой платформы: всё, что говорит с ОС. Определение темы системы есть для всех ОС,
+//! само приложение (хук мыши, окна, трей) — пока только для Windows (`win32`).
 
-mod app;
-mod audio;
-mod hook;
-mod input;
-mod layer;
-mod note;
-mod tray;
-mod util;
+pub mod theme;
 
-pub use app::run;
+#[cfg(windows)]
+pub mod win32;
+
+#[cfg(windows)]
+pub use win32::run;

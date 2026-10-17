@@ -1,0 +1,117 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Радиальное меню — состав кнопок
+#
+#  Файл перечитывается при следующем открытии меню, перезапуск не нужен.
+#  Если в нём ошибка, у значка в трее появится уведомление с номером строки,
+#  а меню на это время будет стандартным.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#  КНОПКА
+#    label:    подпись (обязательно)
+#    icon:     встроенная иконка (список ниже) или путь к своему .svg / .png —
+#              относительно этой папки или полный. Варианты:
+#                icon: icons/mail.svg                  одноцветная, красится под тему
+#                icon: { file: logo.png, color: true }  в своих цветах
+#                icon: { from: "C:/…/app.exe" }         иконка программы или файла
+#                icon: none                            без иконки
+#              Если icon не указан: у run — иконка программы, у остальных — первая буква подписи.
+#    color:    "#E5484D" — свой цвет подсветки кнопки
+#    items:    пункты веера (до 6); у пункта веера может быть свой веер (до 4 пунктов), глубже нельзя
+#    dwell:    true — веер раскрывается, только если задержаться на кнопке
+#              (нужно кнопке, у которой есть и своё действие, и веер)
+#    state:    media — кнопка зеленеет, пока играет звук
+#    when_off: { flag: media, icon: play, label: Плей } — другие иконка и подпись, пока звука нет
+#
+#  ДЕЙСТВИЕ (одно на кнопку)
+#    keys:   ctrl+shift+esc        сочетание клавиш (ctrl alt shift win, a–z, 0–9, f1–f24,
+#                                  enter tab esc space backspace delete home end pgup pgdn
+#                                  left right up down printscreen capslock num0–num9 ; = , - . / ` [ \ ] ')
+#    text:   "Добрый день!"        напечатать текст (\n — новая строка)
+#    run:    notepad               программа: имя, как в «Выполнить», или путь
+#    run:    { path: code, args: ".", cwd: "D:/Проекты", admin: false }
+#            args — строкой или списком; admin: true — с правами администратора
+#    open:   https://ya.ru         ссылка, файл, папка или протокол ("ms-settings:", "mailto:")
+#    media:  prev | next | play-pause | mute
+#    volume: up | down
+#    action: explorer | note | settings
+#    steps:  [ { keys: ctrl+a }, { wait: 100 }, { keys: ctrl+c } ]   — несколько действий подряд
+#
+#  В путях можно писать переменные окружения: "%USERPROFILE%/Downloads".
+#
+#  ВСТРОЕННЫЕ ИКОНКИ
+#    square-plus folder file gear pencil-to-square paste clock-arrow-rotate-left headphones
+#    backward-step pause play forward-step copy square-dashed scissors
+# ─────────────────────────────────────────────────────────────────────────────
+
+layout:
+  start: top          # где первая кнопка: top, right, bottom, left или угол в градусах
+  clockwise: true     # остальные идут по часовой стрелке
+  fan_spread: 60      # угол между пунктами веера, ° (20–90; при многих пунктах сожмётся сам)
+
+menu:                 # основные кнопки — до 12, круг расширяется сам
+  - label: Открыть
+    icon: square-plus
+    items:
+      - { label: Проводник, icon: folder, action: explorer }
+      - { label: Параметры, icon: gear, open: "ms-settings:" }
+      - { label: Заметка, icon: pencil-to-square, action: note }
+
+  - label: Вставить
+    icon: paste
+    keys: ctrl+v
+    dwell: true
+    items:
+      - { label: Буфер обмена, icon: clock-arrow-rotate-left, keys: win+v }
+
+  - label: Медиа
+    icon: headphones
+    state: media
+    items:
+      - { label: Назад, icon: backward-step, media: prev }
+      - label: Пауза
+        icon: pause
+        media: play-pause
+        when_off: { flag: media, icon: play, label: Плей }
+      - { label: Вперёд, icon: forward-step, media: next }
+
+  - label: Копировать
+    icon: copy
+    keys: ctrl+c
+    dwell: true
+    items:
+      - { label: Выбрать все, icon: square-dashed, keys: ctrl+a }
+      - { label: Вырезать, icon: scissors, keys: ctrl+x }
+
+# >>> примеры — чтобы включить, уберите «# » в начале нужных строк
+#
+#   - label: Блокнот
+#     run: notepad
+#
+#   - label: Терминал
+#     run: { path: wt, admin: true }      # с правами администратора
+#     color: "#2E9E5B"
+#
+#   - label: Загрузки
+#     icon: folder
+#     open: "%USERPROFILE%/Downloads"
+#
+#   - label: Почта
+#     icon: icons/mail.svg                # свой значок: положите файл в папку icons рядом
+#     open: "mailto:"
+#
+#   - label: Подпись
+#     text: "С уважением,\nИван"
+#
+#   - label: Скопировать всё
+#     icon: copy
+#     steps: [ { keys: ctrl+a }, { wait: 80 }, { keys: ctrl+c } ]
+#
+# # Своё меню для отдельных программ: пока активно их окно, вместо общего
+# # меню показывается это (layout тоже можно задать своё).
+# apps:
+#   - match: [code.exe, cursor.exe]
+#     menu:
+#       - { label: Команды, keys: ctrl+shift+p }
+#       - { label: Терминал, keys: "ctrl+`" }
+#       - { label: Файлы, keys: ctrl+p }
+#       - { label: Поиск, keys: ctrl+shift+f }

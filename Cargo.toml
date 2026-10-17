@@ -1,6 +1,6 @@
 [package]
 name = "radial_menu"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Радиальное меню на боковой кнопке мыши (Windows)"
 license = "MIT"
@@ -18,11 +18,15 @@ tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
 svgtypes = "0.15"
 png = "0.17"
 fontdue = { version = "0.9", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+resvg = { version = "0.45", default-features = false }
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.61"
 features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Media",
     "Win32_Media_Audio",
@@ -37,6 +41,9 @@ features = [
     "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_Storage_FileSystem",
+    "Win32_System_ProcessStatus",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
@@ -47,8 +54,16 @@ features = [
 winresource = "0.1"
 
 [profile.release]
-opt-level = 3
+opt-level = "z" # размер: ядро рисования ниже ускорено отдельно
 lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Горячий путь (растеризация кадра) — на скорость, всё остальное — на размер.
+[profile.release.package.tiny-skia]
+opt-level = 3
+[profile.release.package.tiny-skia-path]
+opt-level = 3
+[profile.release.package.radial_menu]
+opt-level = 3
