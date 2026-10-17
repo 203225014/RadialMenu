@@ -4,4 +4,4 @@
 pub mod editor;
 pub mod vault;
 
-pub use vault::{link_query, ring_name, save, scan, suggest, NoteRef, VaultIndex};
+pub use vault::{clean_name, link_query, ring_name, save, save_named, scan, suggest, NoteRef, VaultIndex};

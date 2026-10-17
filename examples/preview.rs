@@ -119,6 +119,21 @@ fn main() {
         }
     }
 
+    // подсказки `[[` в окне заметки
+    if let Some(fonts) = Fonts::load() {
+        let items: Vec<String> = ["Задания", "Куки", "NoteDrop - T3", "Задачи", "Логины-пароли", "Правила", "Wallet keyword", "Ответы на вопросы", "Чистый лист", "Заметки"]
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        let pal = radial_menu::render::palette::ui(theme);
+        if let Some(img) = radial_menu::ui::suggest_view::render(&items, 1, Some(3), 0, scale, &pal, &fonts) {
+            let (w, h) = (img.width() as usize, img.height() as usize);
+            let mut bgra = vec![0u8; w * h * 4];
+            img.to_bgra(&mut bgra);
+            save_bgra(&dir.join("11_suggest.png"), w, h, &bgra, [0x26, 0x2c, 0x3d]);
+        }
+    }
+
     // окно настроек
     let Some(fonts) = Fonts::load() else {
         eprintln!("нет шрифтов — окно настроек не нарисовано");

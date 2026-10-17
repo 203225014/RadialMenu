@@ -2,3 +2,4 @@
 //! Платформа подаёт события и выводит готовую картинку.
 
 pub mod settings_form;
+pub mod suggest_view;

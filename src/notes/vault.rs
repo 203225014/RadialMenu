@@ -140,6 +140,50 @@ pub fn suggest<'a>(index: &'a VaultIndex, query: &str, limit: usize) -> Vec<&'a 
 }
 
 /// Записать заметку как Ring_NN.md, не затирая существующие. Возвращает имя без расширения.
+/// Имя файла заметки из того, что ввёл пользователь: без `.md`, запрещённых в Windows знаков,
+/// хвостовых точек и пробелов. Пустая строка — имя не задано.
+pub fn clean_name(raw: &str) -> String {
+    let t = raw.trim();
+    let t = if t.len() > 3 && t.to_ascii_lowercase().ends_with(".md") { &t[..t.len() - 3] } else { t };
+    let t: String = t
+        .chars()
+        .map(|c| if "\\/:*?\"<>|".contains(c) || c.is_control() { ' ' } else { c })
+        .collect();
+    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let t = t.trim_matches(|c| c == '.' || c == ' ');
+    // зарезервированные имена Windows
+    let stem = t.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.ends_with(|c: char| c.is_ascii_digit()));
+    if reserved {
+        return format!("_{t}");
+    }
+    t.chars().take(120).collect()
+}
+
+/// Сохранить под своим именем; занято — «Имя (2)», «Имя (3)»…
+pub fn save_named(vault: &Path, content: &str, name: &str) -> io::Result<String> {
+    let text = content.replace("\r\n", "\n");
+    let text = text.trim_end();
+    for n in 1..=50 {
+        let candidate = if n == 1 { name.to_string() } else { format!("{name} ({n})") };
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(vault.join(format!("{candidate}.md")))
+        {
+            Ok(mut f) => {
+                f.write_all(text.as_bytes())?;
+                f.write_all(b"\n")?;
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "не удалось подобрать свободное имя"))
+}
+
 pub fn save(vault: &Path, content: &str, first_try: u32) -> io::Result<String> {
     let text = content.replace("\r\n", "\n");
     let text = text.trim_end();
@@ -283,4 +327,25 @@ mod tests {
         let again = save(&t.0, "ещё", 2).unwrap();
         assert_eq!(again, "Ring_03");
     }
+
+    #[test]
+    fn clean_name_strips_what_windows_dislikes() {
+        assert_eq!(clean_name("  Идея: про <всё>?.md "), "Идея про всё");
+        assert_eq!(clean_name("a/b\\c"), "a b c");
+        assert_eq!(clean_name("..."), "");
+        assert_eq!(clean_name("   "), "");
+        assert_eq!(clean_name("Заметка."), "Заметка");
+        assert_eq!(clean_name("con"), "_con");
+        assert_eq!(clean_name("note.md"), "note");
+    }
+
+    #[test]
+    fn save_named_never_overwrites() {
+        let t = Tmp::new("named");
+        assert_eq!(save_named(&t.0, "one", "Идея").unwrap(), "Идея");
+        assert_eq!(save_named(&t.0, "two", "Идея").unwrap(), "Идея (2)");
+        assert_eq!(fs::read_to_string(t.0.join("Идея.md")).unwrap(), "one\n");
+        assert_eq!(fs::read_to_string(t.0.join("Идея (2).md")).unwrap(), "two\n");
+    }
 }
+

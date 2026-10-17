@@ -1,9 +1,9 @@
-﻿//! Р РёСЃРѕРІР°РЅРёРµ РѕРєРѕРЅ (РЅР°СЃС‚СЂРѕР№РєРё): СЃРіР»Р°Р¶РµРЅРЅС‹Рµ С„РёРіСѓСЂС‹ Рё С‚РµРєСЃС‚ РІ Р±СѓС„РµСЂ. РџР»Р°С‚С„РѕСЂРјР° С‚РѕР»СЊРєРѕ
-//! РєРѕРїРёСЂСѓРµС‚ РіРѕС‚РѕРІС‹Р№ Р±СѓС„РµСЂ РЅР° СЌРєСЂР°РЅ, РїРѕСЌС‚РѕРјСѓ РѕРєРЅРѕ РІС‹РіР»СЏРґРёС‚ РѕРґРёРЅР°РєРѕРІРѕ Рё РїСЂРѕРІРµСЂСЏРµС‚СЃСЏ Р±РµР· РћРЎ.
+//! Рисование окон (настройки): сглаженные фигуры и текст в буфер. Платформа только
+//! копирует готовый буфер на экран, поэтому окно выглядит одинаково и проверяется без ОС.
 
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
-/// Р¦РІРµС‚ 0xRRGGBB Рё РїСЂРѕР·СЂР°С‡РЅРѕСЃС‚СЊ 0..1.
+/// Цвет 0xRRGGBB и прозрачность 0..1.
 fn color(rgb: u32, a: f32) -> Color {
     Color::from_rgba8(
         (rgb >> 16) as u8,
@@ -22,7 +22,7 @@ fn paint(rgb: u32, a: f32) -> Paint<'static> {
     p
 }
 
-/// РЎРјРµС€Р°С‚СЊ РґРІР° С†РІРµС‚Р° 0xRRGGBB: `t` = 0 в†’ `a`, 1 в†’ `b`.
+/// Смешать два цвета 0xRRGGBB: `t` = 0 → `a`, 1 → `b`.
 pub fn blend(a: u32, b: u32, t: f32) -> u32 {
     let t = t.clamp(0.0, 1.0);
     let ch = |s: u32| {
@@ -36,7 +36,7 @@ pub struct Painter {
     pm: Pixmap,
 }
 
-/// Р’С‹СЂР°РІРЅРёРІР°РЅРёРµ С‚РµРєСЃС‚Р° РїРѕ РіРѕСЂРёР·РѕРЅС‚Р°Р»Рё РѕС‚РЅРѕСЃРёС‚РµР»СЊРЅРѕ `x`.
+/// Выравнивание текста по горизонтали относительно `x`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Align {
     Left,
@@ -83,7 +83,7 @@ impl Painter {
         pb.finish()
     }
 
-    /// РЎРєСЂСѓРіР»С‘РЅРЅС‹Р№ РїСЂСЏРјРѕСѓРіРѕР»СЊРЅРёРє СЃ Р·Р°Р»РёРІРєРѕР№.
+    /// Скруглённый прямоугольник с заливкой.
     #[allow(clippy::too_many_arguments)]
     pub fn fill_rrect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, rgb: u32, a: f32) {
         if let Some(p) = Self::rrect_path(x, y, w, h, r) {
@@ -92,7 +92,7 @@ impl Painter {
         }
     }
 
-    /// РЎРєСЂСѓРіР»С‘РЅРЅР°СЏ СЂР°РјРєР° С‚РѕР»С‰РёРЅРѕР№ `width` (РІРЅСѓС‚СЂРё РїСЂСЏРјРѕСѓРіРѕР»СЊРЅРёРєР°).
+    /// Скруглённая рамка толщиной `width` (внутри прямоугольника).
     #[allow(clippy::too_many_arguments)]
     pub fn stroke_rrect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, rgb: u32, a: f32, width: f32) {
         let half = width / 2.0;
@@ -104,6 +104,25 @@ impl Painter {
             self.pm
                 .stroke_path(&p, &paint(rgb, a), &stroke, Transform::identity(), None);
         }
+    }
+
+    /// Одноцветная иконка (маска) стороной `size` px с левым верхним углом в (`x`, `y`).
+    pub fn mask(&mut self, m: &super::raster::Mask, x: f32, y: f32, rgb: u32, a: f32) {
+        let n = m.n as u32;
+        let Some(mut icon) = Pixmap::new(n, n) else { return };
+        let (r, g, b) = ((rgb >> 16 & 0xFF) as f32, (rgb >> 8 & 0xFF) as f32, (rgb & 0xFF) as f32);
+        for (px, &cov) in icon.data_mut().chunks_exact_mut(4).zip(&m.data) {
+            let al = cov as f32 / 255.0 * a;
+            px.copy_from_slice(&[(r * al) as u8, (g * al) as u8, (b * al) as u8, (al * 255.0) as u8]);
+        }
+        self.pm.draw_pixmap(
+            x.round() as i32,
+            y.round() as i32,
+            icon.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
     }
 
     pub fn fill_circle(&mut self, cx: f32, cy: f32, r: f32, rgb: u32, a: f32) {
@@ -129,7 +148,7 @@ impl Painter {
         }
     }
 
-    /// РЁРёСЂРёРЅР° СЃС‚СЂРѕРєРё РІ px.
+    /// Ширина строки в px.
     pub fn measure(font: &fontdue::Font, text: &str, px: f32) -> f32 {
         let chars: Vec<char> = text.chars().collect();
         let mut x = 0.0;
@@ -142,7 +161,7 @@ impl Painter {
         x
     }
 
-    /// РЎС‚СЂРѕРєР° С‚РµРєСЃС‚Р°; `cy` вЂ” СЃРµСЂРµРґРёРЅР° СЃС‚СЂРѕРєРё РїРѕ РІРµСЂС‚РёРєР°Р»Рё. Р’РѕР·РІСЂР°С‰Р°РµС‚ С€РёСЂРёРЅСѓ.
+    /// Строка текста; `cy` — середина строки по вертикали. Возвращает ширину.
     #[allow(clippy::too_many_arguments)]
     pub fn text(
         &mut self,
@@ -198,7 +217,7 @@ impl Painter {
         width
     }
 
-    /// РЎС‚СЂРѕРєР°, РѕР±СЂРµР·Р°РЅРЅР°СЏ РјРЅРѕРіРѕС‚РѕС‡РёРµРј РїРѕ С€РёСЂРёРЅРµ `max_w`.
+    /// Строка, обрезанная многоточием по ширине `max_w`.
     #[allow(clippy::too_many_arguments)]
     pub fn text_clipped(
         &mut self,
@@ -215,27 +234,27 @@ impl Painter {
             return;
         }
         let chars: Vec<char> = text.chars().collect();
-        // СЂРµР¶РµРј СЃРµСЂРµРґРёРЅСѓ: Сѓ РїСѓС‚РµР№ РІР°Р¶РЅС‹ Рё РЅР°С‡Р°Р»Рѕ (РґРёСЃРє), Рё РєРѕРЅРµС† (РїР°РїРєР°)
+        // режем середину: у путей важны и начало (диск), и конец (папка)
         let mut keep = chars.len();
         while keep > 2 {
             keep -= 1;
             let head: String = chars[..keep / 2].iter().collect();
             let tail: String = chars[chars.len() - (keep - keep / 2)..].iter().collect();
-            let s = format!("{head}вЂ¦{tail}");
+            let s = format!("{head}…{tail}");
             if Self::measure(font, &s, px) <= max_w {
                 self.text(font, &s, x, cy, px, rgb, Align::Left);
                 return;
             }
         }
-        self.text(font, "вЂ¦", x, cy, px, rgb, Align::Left);
+        self.text(font, "…", x, cy, px, rgb, Align::Left);
     }
 
-    /// РџРёРєСЃРµР»Рё RGBA (РїСЂРµРґСѓРјРЅРѕР¶РµРЅРЅС‹Рµ) вЂ” РґР»СЏ СЃРѕС…СЂР°РЅРµРЅРёСЏ РІ PNG.
+    /// Пиксели RGBA (предумноженные) — для сохранения в PNG.
     pub fn rgba(&self) -> &[u8] {
         self.pm.data()
     }
 
-    /// РЎРєРѕРїРёСЂРѕРІР°С‚СЊ РІ Р±СѓС„РµСЂ BGRA (С„РѕСЂРјР°С‚ DIB Windows), СЃС‚СЂРѕРєРё СЃРІРµСЂС…Сѓ РІРЅРёР·.
+    /// Скопировать в буфер BGRA (формат DIB Windows), строки сверху вниз.
     pub fn to_bgra(&self, out: &mut [u8]) {
         for (d, s) in out.chunks_exact_mut(4).zip(self.pm.data().chunks_exact(4)) {
             d[0] = s[2];
@@ -261,7 +280,7 @@ mod tests {
         p.clear(0x000000);
         p.fill_rrect(10.0, 10.0, 40.0, 20.0, 6.0, 0xFF0000, 1.0);
         assert_eq!(px(&p, 30, 20), [255, 0, 0, 255]);
-        assert_eq!(px(&p, 10, 10)[0], 0); // СЃРєСЂСѓРіР»С‘РЅРЅС‹Р№ СѓРіРѕР» РЅРµ Р·Р°Р»РёС‚
+        assert_eq!(px(&p, 10, 10)[0], 0); // скруглённый угол не залит
         p.fill_circle(80.0, 30.0, 10.0, 0x00FF00, 1.0);
         assert_eq!(px(&p, 80, 30), [0, 255, 0, 255]);
         let mut bgra = vec![0u8; 100 * 60 * 4];
@@ -282,13 +301,13 @@ mod tests {
         let Some(font) = crate::render::raster::load_font_regular() else { return };
         let mut p = Painter::new(200, 40).unwrap();
         p.clear(0x000000);
-        let w = p.text(&font, "РќР°СЃС‚СЂРѕР№РєРё", 10.0, 20.0, 16.0, 0xFFFFFF, Align::Left);
-        assert!(w > 50.0 && (w - Painter::measure(&font, "РќР°СЃС‚СЂРѕР№РєРё", 16.0)).abs() < 1e-3);
+        let w = p.text(&font, "Настройки", 10.0, 20.0, 16.0, 0xFFFFFF, Align::Left);
+        assert!(w > 50.0 && (w - Painter::measure(&font, "Настройки", 16.0)).abs() < 1e-3);
         assert!(p.rgba().chunks_exact(4).any(|c| c[0] > 200));
-        // РѕР±СЂРµР·РєР°: РґР»РёРЅРЅС‹Р№ РїСѓС‚СЊ РЅРµ РІС‹Р»РµР·Р°РµС‚ Р·Р° РіСЂР°РЅРёС†Сѓ
+        // обрезка: длинный путь не вылезает за границу
         let mut q = Painter::new(120, 30).unwrap();
         q.clear(0x000000);
-        q.text_clipped(&font, "C:/РѕС‡РµРЅСЊ/РґР»РёРЅРЅС‹Р№/РїСѓС‚СЊ/Рє/С…СЂР°РЅРёР»РёС‰Сѓ/Р·Р°РјРµС‚РѕРє", 0.0, 15.0, 13.0, 0xFFFFFF, 80.0);
+        q.text_clipped(&font, "C:/очень/длинный/путь/к/хранилищу/заметок", 0.0, 15.0, 13.0, 0xFFFFFF, 80.0);
         for y in 0..30 {
             for x in 82..120 {
                 assert_eq!(px(&q, x, y)[0], 0, "({x},{y})");

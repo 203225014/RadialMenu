@@ -4,4 +4,5 @@ pub mod focus;
 pub mod layer;
 pub mod note;
 pub mod settings;
+pub mod suggest;
 pub mod tray;

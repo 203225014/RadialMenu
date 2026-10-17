@@ -8,7 +8,7 @@ macro_rules! svg {
 }
 
 /// Все имена, которые можно писать в файле меню (`blank` — кнопка без иконки).
-pub const NAMES: [&str; 16] = [
+pub const NAMES: [&str; 17] = [
     "blank",
     "folder",
     "file",
@@ -25,6 +25,7 @@ pub const NAMES: [&str; 16] = [
     "clock-arrow-rotate-left",
     "square-dashed",
     "scissors",
+    "xmark",
 ];
 
 pub fn exists(key: &str) -> bool {
@@ -50,6 +51,7 @@ pub fn icon(key: &str) -> Option<&'static str> {
         "clock-arrow-rotate-left" => svg!("clock-arrow-rotate-left"),
         "square-dashed" => svg!("square-dashed"),
         "scissors" => svg!("scissors"),
+        "xmark" => svg!("xmark"),
         _ => None,
     }
 }
