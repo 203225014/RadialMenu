@@ -737,7 +737,6 @@ fn chrome(n: &Note) -> Option<Painter> {
         };
         c.text(&fonts.bold, &n.title, tx, head_cy, 15.5 * s, tone, Align::Left);
     }
-    c.fill_rrect(PAD * s, (HEAD - 4.0) * s + 1.0, n.w as f32 - 2.0 * PAD * s, 1.0_f32.max(s * 0.8), 0.0, p.bg2, 1.0);
 
     // карточка под текст
     let (cl, ct, cr, cb) = card_rect(n.w, n.h, s);
