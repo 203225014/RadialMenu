@@ -84,9 +84,19 @@ fn tile(rect: f32, rx: f32, off: f32) -> tiny_skia::Path {
     pb.finish().unwrap()
 }
 
+/// Вид значка: с тёмной плиткой (exe, Проводник) или без неё — для трея, под цвет панели задач.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Style {
+    Plate,
+    /// Без плитки, светлый рисунок — для тёмной панели задач.
+    TrayDark,
+    /// Без плитки, тёмный рисунок — для светлой панели задач.
+    TrayLight,
+}
+
 /// Рисует логотип в квадрат `px`×`px` (координаты макета — 256×256); `target` — размер, в котором
 /// значок увидят (мелкие рисуются в 4× и сжимаются, а упрощение зависит от конечного размера).
-fn draw(px: u32, target: u32) -> Pixmap {
+fn draw(px: u32, target: u32, style: Style) -> Pixmap {
     let mut pm = Pixmap::new(px, px).unwrap();
     let tf = Transform::from_scale(px as f32 / 256.0, px as f32 / 256.0);
     let (ring_w, dot_y, detail) = match target {
@@ -96,15 +106,13 @@ fn draw(px: u32, target: u32) -> Pixmap {
         _ => (30.0, 118.0, 3),
     };
     // в трее значок крошечный: рисунок увеличиваем, чтобы кольцо занимало всю клетку, как у соседей
-    let k = if target <= 40 { 1.24 } else { 1.0 };
+    let plate = style == Style::Plate;
+    let k = if !plate { 1.3 } else if target <= 40 { 1.24 } else { 1.0 };
     let tfg = tf.pre_translate(128.0, 128.0).pre_scale(k, k).pre_translate(-128.0, -128.0);
-    fill(
-        &mut pm,
-        &tile(256.0, 58.0, 0.0),
-        rgba(0x1b, 0x1f, 0x2b, 1.0),
-        tf,
-    );
-    if detail == 3 {
+    if plate {
+        fill(&mut pm, &tile(256.0, 58.0, 0.0), rgba(0x1b, 0x1f, 0x2b, 1.0), tf);
+    }
+    if plate && detail == 3 {
         stroke(
             &mut pm,
             &tile(254.0, 57.0, 1.0),
@@ -114,14 +122,14 @@ fn draw(px: u32, target: u32) -> Pixmap {
             tf,
         );
     }
-    let seg = if detail == 3 {
-        rgba(0xdd, 0xe3, 0xf0, 0.92)
-    } else {
-        rgba(0xdd, 0xe3, 0xf0, 1.0)
+    let (seg, accent, hub) = match style {
+        Style::TrayLight => (rgba(0x2b, 0x33, 0x4d, 1.0), rgba(0x3b, 0x6c, 0xf0, 1.0), rgba(0x5b, 0x65, 0x80, 0.85)),
+        _ if detail == 3 => (rgba(0xdd, 0xe3, 0xf0, 0.92), rgba(0x69, 0x9b, 0xff, 1.0), rgba(0xcc, 0xcc, 0xcc, 0.75)),
+        _ => (rgba(0xdd, 0xe3, 0xf0, 1.0), rgba(0x69, 0x9b, 0xff, 1.0), rgba(0xcc, 0xcc, 0xcc, 0.75)),
     };
     for (i, d) in ARCS.iter().enumerate() {
         let c = if i == 0 {
-            rgba(0x69, 0x9b, 0xff, 1.0)
+            accent
         } else {
             seg
         };
@@ -152,7 +160,7 @@ fn draw(px: u32, target: u32) -> Pixmap {
             fill(
                 &mut pm,
                 &circle(128.0, 128.0, 22.0),
-                rgba(0xcc, 0xcc, 0xcc, 0.75),
+                hub,
                 tfg,
             );
             if detail == 3 {
@@ -183,11 +191,11 @@ fn draw(px: u32, target: u32) -> Pixmap {
 }
 
 /// Мелкие размеры рисуем в 4× и усредняем — края чище, чем у прямой растеризации.
-fn render(px: u32) -> Pixmap {
+fn render(px: u32, style: Style) -> Pixmap {
     if px >= 64 {
-        return draw(px, px);
+        return draw(px, px, style);
     }
-    let big = draw(px * 4, px);
+    let big = draw(px * 4, px, style);
     let mut out = Pixmap::new(px, px).unwrap();
     let (src, dst) = (big.data(), out.data_mut());
     for y in 0..px as usize {
@@ -219,10 +227,9 @@ fn png_bytes(pm: &Pixmap) -> Vec<u8> {
     out
 }
 
-fn main() {
-    let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "assets".into()));
-    let sizes = [16u32, 20, 24, 28, 32, 40, 48, 64, 128, 256];
-    let frames: Vec<Vec<u8>> = sizes.iter().map(|&s| png_bytes(&render(s))).collect();
+/// ICO из PNG-кадров заданных размеров.
+fn build_ico(sizes: &[u32], style: Style) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let frames: Vec<Vec<u8>> = sizes.iter().map(|&s| png_bytes(&render(s, style))).collect();
     let mut ico = Vec::new();
     ico.extend_from_slice(&[0, 0, 1, 0]);
     ico.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
@@ -235,8 +242,19 @@ fn main() {
         offset += f.len();
     }
     frames.iter().for_each(|f| ico.extend_from_slice(f));
+    (ico, frames)
+}
+
+fn main() {
+    let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "assets".into()));
+    let sizes = [16u32, 20, 24, 28, 32, 40, 48, 64, 128, 256];
+    let (ico, frames) = build_ico(&sizes, Style::Plate);
     std::fs::write(dir.join("RadialMenu.ico"), &ico).unwrap();
     std::fs::write(dir.join("logo-256.png"), frames.last().unwrap()).unwrap();
+    // трей: без плитки, под тёмную и светлую панель задач (какую — решает программа при запуске)
+    let tray = [16u32, 20, 24, 28, 32, 40, 48, 64];
+    std::fs::write(dir.join("tray-dark.ico"), build_ico(&tray, Style::TrayDark).0).unwrap();
+    std::fs::write(dir.join("tray-light.ico"), build_ico(&tray, Style::TrayLight).0).unwrap();
     let _ = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
-    eprintln!("RadialMenu.ico: {} байт, размеры {:?}", ico.len(), sizes);
+    eprintln!("RadialMenu.ico: {} байт, размеры {:?}; tray-dark/light.ico: {:?}", ico.len(), sizes, tray);
 }

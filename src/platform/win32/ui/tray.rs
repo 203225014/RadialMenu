@@ -18,7 +18,29 @@ use crate::platform::win32::system::util::{pcwstr, wide};
 
 pub const WM_TRAY: u32 = WM_APP + 10;
 const ICON_ID: u32 = 1;
-const ICO: &[u8] = include_bytes!("../../../../assets/RadialMenu.ico");
+/// Значки без плитки: светлый рисунок — для тёмной панели задач, тёмный — для светлой.
+const ICO_ON_DARK: &[u8] = include_bytes!("../../../../assets/tray-dark.ico");
+const ICO_ON_LIGHT: &[u8] = include_bytes!("../../../../assets/tray-light.ico");
+
+/// Светлая ли панель задач (`SystemUsesLightTheme`; она может отличаться от темы приложений).
+fn taskbar_is_light() -> bool {
+    use windows::core::w;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let mut value: u32 = 0;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
+            w!("SystemUsesLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut value as *mut u32 as *mut _),
+            Some(&mut size),
+        )
+    };
+    r.is_ok() && value != 0
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Cmd {
@@ -30,16 +52,17 @@ pub enum Cmd {
 
 /// Кадр нужного размера из ICO (в нём PNG- или BMP-кадры).
 fn icon() -> HICON {
+    let ico: &[u8] = if taskbar_is_light() { ICO_ON_LIGHT } else { ICO_ON_DARK };
     let want = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
-    let count = u16::from_le_bytes([ICO[4], ICO[5]]) as usize;
+    let count = u16::from_le_bytes([ico[4], ico[5]]) as usize;
     let mut best: Option<(i32, usize, usize)> = None; // (разница размера, смещение, длина)
     for i in 0..count {
-        let e = &ICO[6 + i * 16..6 + (i + 1) * 16];
+        let e = &ico[6 + i * 16..6 + (i + 1) * 16];
         let w = if e[0] == 0 { 256 } else { e[0] as i32 };
         let size = u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as usize;
         let off = u32::from_le_bytes([e[12], e[13], e[14], e[15]]) as usize;
         let score = (w - want).abs();
-        if off + size <= ICO.len() && best.is_none_or(|b| score < b.0) {
+        if off + size <= ico.len() && best.is_none_or(|b| score < b.0) {
             best = Some((score, off, size));
         }
     }
@@ -48,7 +71,7 @@ fn icon() -> HICON {
     };
     unsafe {
         CreateIconFromResourceEx(
-            &ICO[off..off + size],
+            &ico[off..off + size],
             true,
             0x0003_0000,
             want,

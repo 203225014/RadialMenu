@@ -458,6 +458,9 @@ unsafe extern "system" fn main_proc(
         WM_SETTINGCHANGE if is_color_change(lparam) => {
             with_app(apply_theme);
             settings::refresh_theme();
+            // панель задач сменила цвет — значку нужен другой рисунок
+            let paused = with_app(|a| a.paused).unwrap_or(false);
+            tray::set_tip(hwnd, &tip(paused));
         }
         WM_TRAY => match (lparam.0 & 0xFFFF) as u32 {
             WM_LBUTTONDBLCLK => open_settings(),
