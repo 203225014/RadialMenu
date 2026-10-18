@@ -19,8 +19,8 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, KillTimer, MsgWaitForMultipleObjectsEx,
-    PeekMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetTimer,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, KillTimer, MessageBoxW,
+    MsgWaitForMultipleObjectsEx, PeekMessageW, MB_ICONERROR, MB_OK, MB_TOPMOST, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetTimer,
     TranslateMessage, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_QUIT, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER,
     WNDCLASSW,
@@ -31,6 +31,7 @@ use super::input::send;
 use super::slot::Slot;
 use super::system::audio::AudioMeter;
 use super::system::{autostart, files, programs, util};
+use crate::platform::diag;
 use super::ui::layer::Layer;
 use super::ui::tray::{self, Cmd, WM_TRAY};
 use super::ui::{note, settings};
@@ -470,6 +471,10 @@ unsafe extern "system" fn main_proc(
                     Some(Cmd::Settings) => open_settings(),
                     Some(Cmd::TogglePause) => toggle_pause(hwnd),
                     Some(Cmd::ToggleAutostart) => autostart::set(!autostart::enabled()),
+                    Some(Cmd::OpenLog) => {
+                        diag::log("журнал открыт из трея"); // чтобы файл точно существовал
+                        send::open(&diag::log_path().to_string_lossy());
+                    }
                     Some(Cmd::Exit) => {
                         tray::remove(hwnd);
                         PostQuitMessage(0);
@@ -566,8 +571,31 @@ fn setup() -> Result<HWND, String> {
 }
 
 /// Точка входа Windows-версии.
+/// Окно после аварии: без него exe без консоли просто исчез бы.
+fn show_fatal(log_path: &str) {
+    let text = util::wide(&format!(
+        "Радиальное меню аварийно завершилось.
+
+Подробности записаны в журнал:
+{log_path}
+
+Пришлите этот файл разработчику."
+    ));
+    let title = util::wide("Радиальное меню");
+    unsafe {
+        MessageBoxW(None, util::pcwstr(&text), util::pcwstr(&title), MB_OK | MB_ICONERROR | MB_TOPMOST);
+    }
+}
+
 pub fn run() {
-    std::panic::set_hook(Box::new(|info| util::log_error(&format!("паника: {info}"))));
+    // установщик при удалении снимает автозапуск этим ключом и сразу выходит
+    if std::env::args().any(|a| a == "--remove-autostart") {
+        autostart::set(false);
+        return;
+    }
+    diag::install_panic_hook(show_fatal);
+    diag::log_start();
+    autostart::refresh_path(); // программу перенесли или обновили — запись автозапуска должна вести к ней
     unsafe {
         // один экземпляр: два хука на одну кнопку мешают друг другу
         let _mutex = CreateMutexW(None, false, w!("Local\\RadialMenuSingleton"));

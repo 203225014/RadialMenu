@@ -1,0 +1,57 @@
+name: release
+
+# Выпуск: поставить тег vX.Y.Z (версия должна совпадать с Cargo.toml и иметь раздел в CHANGELOG.md).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Версия тега совпадает с Cargo.toml
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "Тег $env:GITHUB_REF_NAME, а в Cargo.toml версия $v" }
+          "VERSION=$v" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - run: cargo test --release
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo build --release
+
+      - name: Установщик
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=$env:VERSION" installer\RadialMenu.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC завершился с кодом $LASTEXITCODE" }
+
+      - name: Переносимый zip и контрольные суммы
+        run: |
+          Compress-Archive -Path target\release\RadialMenu.exe, README.md, CHANGELOG.md -DestinationPath "dist\RadialMenu-$env:VERSION-portable.zip"
+          Get-ChildItem dist | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
+            ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } |
+            Out-File -Encoding utf8 dist\SHA256SUMS.txt
+
+      - name: Описание релиза из CHANGELOG.md
+        run: |
+          $text = Get-Content CHANGELOG.md -Raw -Encoding utf8
+          $m = [regex]::Match($text, "(?ms)^## \[$([regex]::Escape($env:VERSION))\][^\r\n]*\r?\n(.*?)(?=^## \[|\z)")
+          if (-not $m.Success) { throw "В CHANGELOG.md нет раздела для $env:VERSION" }
+          $m.Groups[1].Value.Trim() | Out-File -Encoding utf8 release-notes.md
+
+      - name: Публикация
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME dist/* --title "Радиальное меню $env:VERSION" --notes-file release-notes.md

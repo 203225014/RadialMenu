@@ -187,7 +187,7 @@ enum ArgsDoc {
 /// `base` — папка файла (от неё считаются относительные пути иконок);
 /// `is_icon` — есть ли встроенная иконка с таким именем (её знает слой графики).
 pub fn parse(text: &str, base: Option<&Path>, is_icon: &dyn Fn(&str) -> bool) -> Result<MenuSet, MenuError> {
-    let doc: Doc = serde_yaml::from_str(text).map_err(|e| MenuError {
+    let doc: Doc = serde_yaml_ng::from_str(text).map_err(|e| MenuError {
         line: e.location().map_or(0, |l| l.line()),
         msg: friendly(&e.to_string()),
     })?;
@@ -222,7 +222,7 @@ pub fn parse(text: &str, base: Option<&Path>, is_icon: &dyn Fn(&str) -> bool) ->
     Ok(MenuSet { main, apps })
 }
 
-/// Сообщения serde_yaml — на понятный язык (самые частые случаи).
+/// Сообщения serde_yaml_ng — на понятный язык (самые частые случаи).
 fn friendly(msg: &str) -> String {
     let mut m = msg.to_string();
     if let Some(cut) = m.find(" at line ") {

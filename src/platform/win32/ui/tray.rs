@@ -47,6 +47,7 @@ pub enum Cmd {
     Settings,
     TogglePause,
     ToggleAutostart,
+    OpenLog,
     Exit,
 }
 
@@ -146,6 +147,7 @@ pub fn menu(hwnd: HWND, paused: bool) -> Option<Cmd> {
         let settings = wide("Настройки…");
         let pause = wide(if paused { "Продолжить" } else { "Пауза" });
         let auto = wide("Запускать с Windows");
+        let log = wide("Открыть журнал");
         let exit = wide("Выход");
         let _ = AppendMenuW(m, MF_STRING, 1, pcwstr(&settings));
         let _ = SetMenuDefaultItem(m, 1, 0); // жирным: то же, что двойной щелчок по значку
@@ -158,6 +160,7 @@ pub fn menu(hwnd: HWND, paused: bool) -> Option<Cmd> {
         };
         let _ = AppendMenuW(m, checked, 3, pcwstr(&auto));
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(m, MF_STRING, 5, pcwstr(&log));
         let _ = AppendMenuW(m, MF_STRING, 4, pcwstr(&exit));
         let mut p = POINT::default();
         let _ = GetCursorPos(&mut p);
@@ -178,6 +181,7 @@ pub fn menu(hwnd: HWND, paused: bool) -> Option<Cmd> {
             2 => Some(Cmd::TogglePause),
             3 => Some(Cmd::ToggleAutostart),
             4 => Some(Cmd::Exit),
+            5 => Some(Cmd::OpenLog),
             _ => None,
         }
     }

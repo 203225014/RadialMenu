@@ -76,21 +76,7 @@ pub fn now() -> f64 {
     START.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 
-/// Запись ошибки в %TEMP%\RadialMenu_error.log (у exe без консоли других следов нет).
+/// Запись ошибки в журнал (`platform::diag`): у exe без консоли других следов нет.
 pub fn log_error(text: &str) {
-    use std::io::Write;
-    let dir = std::env::var_os("TEMP")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("RadialMenu_error.log"))
-    {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let _ = writeln!(f, "[unix {secs}] {text}");
-    }
+    crate::platform::diag::log(&format!("ошибка: {text}"));
 }

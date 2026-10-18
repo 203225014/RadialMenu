@@ -23,6 +23,36 @@ pub fn enabled() -> bool {
     }
 }
 
+/// Что сейчас записано в автозапуске (команда запуска вместе с кавычками).
+fn registered() -> Option<String> {
+    use windows::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
+    unsafe {
+        let mut buf = [0u16; 1024];
+        let mut size = std::mem::size_of_val(&buf) as u32;
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            RUN_VALUE,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        )
+        .ok()
+        .ok()?;
+        let len = (size as usize / 2).saturating_sub(1).min(buf.len());
+        Some(String::from_utf16_lossy(&buf[..len]))
+    }
+}
+
+/// Автозапуск включён, но ведёт не к этому exe (программу перенесли или обновили) — поправить.
+pub fn refresh_path() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    if registered().is_some_and(|r| r != format!("\"{}\"", exe.display())) {
+        set(true);
+    }
+}
+
 pub fn set(on: bool) {
     unsafe {
         let mut key = HKEY::default();
