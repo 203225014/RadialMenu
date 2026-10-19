@@ -51,7 +51,7 @@ pub fn log(text: &str) {
     rotate_if_big(&path);
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
         if f.metadata().is_ok_and(|m| m.len() == 0) {
-            let _ = f.write_all(b"ï»¿"); // BOM: Блокнот и PowerShell сразу читают русский текст
+            let _ = f.write_all(&[0xEF, 0xBB, 0xBF]); // BOM: Блокнот и PowerShell сразу читают русский текст
         }
         let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let _ = writeln!(f, "[{} UTC] {text}", fmt_utc(secs));
