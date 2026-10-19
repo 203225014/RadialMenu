@@ -465,6 +465,11 @@ fn pill(font: &fontdue::Font, text: &str, px: f32, scale: f32, colors: &PillColo
     }
 }
 
+/// Плашка с названием трека: рисуется во время работы (текст заранее неизвестен).
+pub fn track_pill(font: &fontdue::Font, text: &str, theme: Theme, scale: f32) -> Rgba {
+    pill(font, text, 13.0 * scale, scale, &palette::pill(theme))
+}
+
 /// Системный шрифт для подписей (жирный Segoe UI → Arial; на других ОС — DejaVu для отладки).
 pub fn load_font() -> Option<fontdue::Font> {
     find_font(

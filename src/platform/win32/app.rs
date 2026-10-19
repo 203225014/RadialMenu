@@ -32,14 +32,14 @@ use super::slot::Slot;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use super::system::audio::AudioMeter;
-use super::system::{autostart, files, http, programs, util};
+use super::system::{autostart, files, http, media, programs, util};
 use crate::platform::diag;
 use super::ui::layer::Layer;
 use super::ui::tray::{self, Cmd, WM_TRAY};
 use super::ui::{note, settings};
 use crate::engine::Engine;
 use crate::model::menu_yaml::MenuError;
-use crate::model::{Action, Context, Flag, MenuSet, Settings, Step, Theme};
+use crate::model::{Action, Context, Flag, MenuSet, Settings, Step, Theme, ThemeMode};
 use crate::platform::theme::Follower;
 use crate::platform::update::{self, Release, Version};
 use crate::render::compose::Canvas;
@@ -173,11 +173,27 @@ fn warn_menu(hwnd: isize, paused: bool, e: &MenuError) {
 /// Тема могла смениться (системная или выбранная): перекрасить всё, что открыто.
 fn apply_theme(app: &mut App) {
     if let Some(t) = app.theme.refresh(app.settings.theme) {
+        diag::log(&format!("тема меню: {t:?} (режим {})", app.settings.theme.key()));
         for e in &mut app.engines {
             e.set_theme(t);
         }
         note::apply_theme(t);
     }
+}
+
+/// Тему выбрали в окне настроек (ещё не сохранив) — сразу показать её в меню и заметке;
+/// `None` — окно закрыли, вернуть ту, что сохранена.
+fn preview_theme(mode: Option<ThemeMode>) {
+    with_app(|app| {
+        let mode = mode.unwrap_or(app.settings.theme);
+        if let Some(t) = app.theme.refresh(mode) {
+            diag::log(&format!("тема меню: {t:?} (режим {})", mode.key()));
+            for e in &mut app.engines {
+                e.set_theme(t);
+            }
+            note::apply_theme(t);
+        }
+    });
 }
 
 /// Новые настройки: кнопка, сочетание, тема, размеры. Пересобирает только то, что нужно.
@@ -254,7 +270,7 @@ fn open_settings() {
     }) else {
         return;
     };
-    settings::open(&s, autostart::enabled(), status, save_settings);
+    settings::open(&s, autostart::enabled(), status, save_settings, preview_theme);
 }
 
 /// Период кадра по частоте обновления экрана (60 Гц → 16 мс, 144 Гц → 7 мс).
@@ -316,6 +332,8 @@ fn tick() {
         // опрос звука — только если в этом меню есть кнопки, которым он нужен
         let playing = app.engines[app.active].menu().uses(Flag::Media) && app.audio.playing(now, false);
         let ctx = Context::default().with(Flag::Media, playing);
+        let track = if app.engines[app.active].menu().uses(Flag::Media) { media::current() } else { None };
+        app.engines[app.active].set_track(track.as_deref());
         let n = app.layer.size() as usize;
         let frame = {
             let engine = &mut app.engines[app.active];
@@ -333,6 +351,7 @@ fn tick() {
             app.layer.hide();
             stop_timer(app);
             app.audio.release();
+            media::set_wanted(false);
         }
     });
 }
@@ -358,6 +377,7 @@ fn on_down() {
         app.engine().press(now);
         if app.engines[app.active].menu().uses(Flag::Media) {
             app.audio.playing(now, true); // сразу узнать, играет ли звук
+            media::set_wanted(true); // и что именно играет
         }
         start_timer(app);
         true

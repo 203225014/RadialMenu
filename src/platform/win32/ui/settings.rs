@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::focus::take_focus;
-use crate::model::{Settings, Theme};
+use crate::model::{Settings, Theme, ThemeMode};
 use crate::platform::theme::system_prefers_dark;
 use crate::platform::win32::input::hook::{self, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, WM_RM_RECORD};
 use crate::platform::win32::input::send;
@@ -42,6 +42,9 @@ use crate::ui::settings_form::{Cmd, Fonts, Key, SettingsForm, Status};
 /// Что делать по «Сохранить»: применить и записать (ошибка — показать в окне).
 pub type OnSave = fn(Settings, bool) -> Result<(), String>;
 
+/// Выбранную в окне тему сразу показать в меню (`Some`) или вернуть сохранённую (`None` — окно закрыто).
+pub type OnPreview = fn(Option<ThemeMode>);
+
 const WM_SET_KEY: u32 = WM_APP + 30;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const EN_CHANGE: u32 = 0x0300;
@@ -52,6 +55,9 @@ struct Win {
     form: SettingsForm,
     fonts: Fonts,
     on_save: OnSave,
+    on_preview: OnPreview,
+    /// Тема, которая сейчас показана в меню по выбору в окне.
+    previewed: ThemeMode,
     /// Кисть фона поля ввода и тема, под которую она сделана.
     field_brush: (Theme, isize),
     edit_font: isize,
@@ -72,7 +78,7 @@ fn theme_of(form: &SettingsForm) -> Theme {
 }
 
 /// Открыть настройки (или вывести вперёд уже открытые). `status` — что показать внизу.
-pub fn open(settings: &Settings, autostart: bool, status: Option<Status>, on_save: OnSave) {
+pub fn open(settings: &Settings, autostart: bool, status: Option<Status>, on_save: OnSave, on_preview: OnPreview) {
     if let Some((hw, ed)) = with(|w| (w.hwnd, w.edit)) {
         if unsafe { IsWindow(Some(h(hw))).as_bool() } {
             take_focus(h(hw), h(ed));
@@ -86,9 +92,24 @@ pub fn open(settings: &Settings, autostart: bool, status: Option<Status>, on_sav
     let mut form = SettingsForm::new(settings.clone(), autostart, ui_scale());
     form.status = status;
     unsafe {
-        if let Err(e) = create(form, fonts, on_save) {
+        if let Err(e) = create(form, fonts, on_save, on_preview) {
             log_error(&format!("окно настроек: {e}"));
         }
+    }
+}
+
+/// Если в окне выбрали другую тему — показать её и в самом меню.
+fn preview_if_changed() {
+    let call = with(|w| {
+        let t = w.form.draft.theme;
+        (t != w.previewed).then(|| {
+            w.previewed = t;
+            (w.on_preview, t)
+        })
+    })
+    .flatten();
+    if let Some((f, t)) = call {
+        f(Some(t));
     }
 }
 
@@ -102,7 +123,7 @@ pub fn refresh_theme() {
     }
 }
 
-unsafe fn create(form: SettingsForm, fonts: Fonts, on_save: OnSave) -> windows::core::Result<()> {
+unsafe fn create(form: SettingsForm, fonts: Fonts, on_save: OnSave, on_preview: OnPreview) -> windows::core::Result<()> {
     let hinst = GetModuleHandleW(None)?;
     let class = w!("RadialMenuSettings");
     let wc = WNDCLASSW {
@@ -170,6 +191,7 @@ unsafe fn create(form: SettingsForm, fonts: Fonts, on_save: OnSave) -> windows::
     let _ = SetWindowSubclass(edit, Some(edit_proc), 1, 0);
 
     let theme = theme_of(&form);
+    let theme_mode = form.draft.theme;
     WIN.with(|s| {
         s.set(Win {
             hwnd: hwnd.0 as isize,
@@ -177,6 +199,8 @@ unsafe fn create(form: SettingsForm, fonts: Fonts, on_save: OnSave) -> windows::
             form,
             fonts,
             on_save,
+            on_preview,
+            previewed: theme_mode,
             field_brush: (theme, CreateSolidBrush(rgb(palette::ui(theme).bg2)).0 as isize),
             edit_font: font.0 as isize,
             tracking: false,
@@ -385,6 +409,7 @@ unsafe extern "system" fn win_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
             }
             run(hwnd, cmd);
+            preview_if_changed();
             LRESULT(0)
         }
         WM_LBUTTONUP => {
@@ -467,6 +492,7 @@ unsafe extern "system" fn win_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             if let Some(w) = WIN.with(|s| s.take()) {
                 let _ = DeleteObject(HGDIOBJ(w.field_brush.1 as *mut _));
                 let _ = DeleteObject(HGDIOBJ(w.edit_font as *mut _));
+                (w.on_preview)(None); // не сохранили — вернуть прежнюю тему меню
             }
             LRESULT(0)
         }

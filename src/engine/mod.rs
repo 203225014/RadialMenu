@@ -10,7 +10,8 @@ pub mod nav;
 use crate::model::{Action, Context, IconRef, Menu, NodeId, Settings, Theme, ROOT};
 use crate::render::compose::{Canvas, Rect, SectorShape};
 use crate::render::palette as style;
-use crate::render::raster::{self, Bake, PillKind, ProgramIcons, BOX, DIAM, DOT_BOX};
+use crate::render::painter::Painter;
+use crate::render::raster::{self, Bake, PillKind, ProgramIcons, Rgba, BOX, DIAM, DOT_BOX};
 use anim::{Anim, Scene};
 use geom::ease_back;
 use layout::Layout;
@@ -52,6 +53,13 @@ pub struct Engine {
     t_prev: f64,
     toast: Option<(&'static str, f64)>,
     prev_dirty: Rect,
+    /// Шрифт для подписи, которая известна только во время работы (что сейчас играет).
+    font: Option<fontdue::Font>,
+    pill_scale: f32,
+    track: Option<String>,
+    track_pills: Vec<(Theme, Rgba)>,
+    /// Прозрачность подписи трека 0..1 (плавно появляется, пока открыта кнопка плеера).
+    track_a: f32,
 }
 
 impl Engine {
@@ -64,6 +72,7 @@ impl Engine {
         theme: Theme,
         programs: ProgramIcons,
     ) -> Engine {
+        let settings_scale = settings.size_percent as f32 / 100.0;
         let metrics = Metrics::new(&settings, ui_scale, screen, &menu);
         let layout = Layout::new(&menu, &metrics);
         let mut texts: Vec<(String, PillKind)> = menu
@@ -108,7 +117,32 @@ impl Engine {
             t_prev: 0.0,
             toast: None,
             prev_dirty: Rect::EMPTY,
+            font: font.cloned(),
+            pill_scale: ui_scale * settings_scale,
+            track: None,
+            track_pills: Vec::new(),
+            track_a: 0.0,
         }
+    }
+
+    /// Что сейчас играет («Название — Исполнитель»); `None` — ничего. Показывается под центром,
+    /// пока открыта кнопка с управлением медиа.
+    pub fn set_track(&mut self, track: Option<&str>) {
+        if track == self.track.as_deref() {
+            return;
+        }
+        self.track = track.map(str::to_string);
+        self.track_pills.clear();
+        let (Some(font), Some(text)) = (&self.font, &self.track) else {
+            return;
+        };
+        let m = &self.metrics;
+        let max_w = 1.85 * (m.ring(0) - m.h);
+        let text = fit_text(font, text, 13.0 * self.pill_scale, max_w - 18.0 * self.pill_scale);
+        self.track_pills = Theme::ALL
+            .iter()
+            .map(|&t| (t, raster::track_pill(font, &text, t, self.pill_scale)))
+            .collect();
     }
 
     pub fn menu(&self) -> &Menu {
@@ -209,6 +243,13 @@ impl Engine {
                 hot: self.nav.hot,
             },
         );
+        let media_open = self
+            .nav
+            .hot
+            .or(self.nav.open)
+            .is_some_and(|id| self.menu.is_media_group(id) || self.menu.node(id).parent.is_some_and(|p| p != ROOT && self.menu.is_media_group(p)));
+        let want = if self.active && media_open && !self.track_pills.is_empty() { 1.0 } else { 0.0 };
+        self.track_a += (want - self.track_a) * (dt as f32 / 0.12).min(1.0);
         let g = if self.active {
             ((now - self.show_t) / FADE_IN).min(1.0)
         } else {
@@ -339,8 +380,31 @@ impl Engine {
                 }
             }
         }
+        // что сейчас играет — под центром (ниже подписи громкости, если она на экране)
+        if self.track_a > 0.02 {
+            if let Some((_, pill)) = self.track_pills.iter().find(|(t, _)| *t == self.theme) {
+                let toast_h = if self.toast.is_some_and(|(_, until)| until > now) { 30.0 * s } else { 0.0 };
+                let y = c.1 + m.hub_r + 14.0 * s + toast_h;
+                dirty = dirty.union(put_pill(cv, pill, c.0 - pill.w as f32 / 2.0, y, self.track_a.min(1.0)));
+            }
+        }
         dirty
     }
+}
+
+/// Обрезать строку многоточием, чтобы она влезла в `max_w` px.
+fn fit_text(font: &fontdue::Font, text: &str, px: f32, max_w: f32) -> String {
+    if Painter::measure(font, text, px) <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for keep in (1..chars.len()).rev() {
+        let s: String = chars[..keep].iter().collect::<String>().trim_end().to_string() + "…";
+        if Painter::measure(font, &s, px) <= max_w {
+            return s;
+        }
+    }
+    "…".to_string()
 }
 
 /// Положить плашку, не выпуская её за край холста.
@@ -498,6 +562,59 @@ mod tests {
             e.release(0.3);
             run(&mut e, &mut cv, 0.3, 0.4, (0.0, 0.0));
         }
+    }
+
+    #[test]
+    fn media_group_is_found_in_the_default_menu() {
+        let menu = default_menu();
+        let media: Vec<_> = menu.ids().filter(|&i| menu.is_media_group(i)).collect();
+        assert!(!media.is_empty());
+        assert!(media.iter().all(|&i| menu.node(i).parent == Some(ROOT) || menu.is_media_group(menu.node(i).parent.unwrap())));
+        // «Открыть» к медиа не относится
+        assert!(!menu.is_media_group(menu.top()[0]));
+    }
+
+    #[test]
+    fn long_title_is_cut_with_an_ellipsis() {
+        let Some(font) = raster::load_font() else { return };
+        let long = "Очень длинное название трека — Исполнитель с длинным именем и ещё немного текста";
+        let cut = fit_text(&font, long, 13.0, 200.0);
+        assert!(cut.ends_with('…') && Painter::measure(&font, &cut, 13.0) <= 200.0, "{cut}");
+        assert_eq!(fit_text(&font, "Короткий", 13.0, 200.0), "Короткий");
+    }
+
+    #[test]
+    fn track_is_shown_only_while_the_media_button_is_open() {
+        let Some(font) = raster::load_font() else { return };
+        let menu = default_menu();
+        let media = menu.ids().find(|&i| menu.node(i).state == Some(crate::model::Flag::Media)).expect("кнопка «Звук»");
+        let dir = {
+            let mut e = Engine::new(Settings::default(), 1.0, (1920, 1080), menu.clone(), Some(&font), Theme::Dark, &raster::no_program_icons);
+            let (x, y) = e.layout.slot(media).off;
+            e.set_track(Some("Песня — Группа"));
+            (x, y)
+        };
+        let shot = |track: Option<&str>, toward: (f32, f32)| {
+            let mut e = Engine::new(Settings::default(), 1.0, (1920, 1080), menu.clone(), Some(&font), Theme::Dark, &raster::no_program_icons);
+            e.set_track(track);
+            let n = e.window_size() as usize;
+            let mut buf = vec![0u8; n * n * 4];
+            let mut cv = Canvas::new(n, n, &mut buf);
+            e.press(0.0);
+            let len = toward.0.hypot(toward.1).max(1.0);
+            run(&mut e, &mut cv, 0.0, 0.8, (toward.0 / len * 6.0, toward.1 / len * 6.0));
+            // область под центром, где стоит подпись
+            let (cx, cy) = (n / 2, n / 2);
+            let m = e.metrics;
+            let (y0, y1) = ((cy as f32 + m.hub_r + 14.0) as usize, (cy as f32 + m.hub_r + 38.0) as usize);
+            (y0..y1).flat_map(|y| (cx - 40..cx + 40).map(move |x| (x, y))).filter(|&(x, y)| buf[(y * n + x) * 4 + 3] > 120).count()
+        };
+        let with = shot(Some("Песня — Группа"), dir);
+        let without = shot(None, dir);
+        let elsewhere = shot(Some("Песня — Группа"), (0.0, -1.0)); // тянемся к «Открыть»
+        assert!(with > 200, "подпись трека нарисована: {with}");
+        assert_eq!(without, 0, "нечего играть — подписи нет");
+        assert_eq!(elsewhere, 0, "у другой кнопки подписи трека нет");
     }
 
     #[test]

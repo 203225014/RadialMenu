@@ -256,6 +256,13 @@ impl Menu {
         go(self, ROOT) - 1
     }
 
+    /// Кнопка управляет медиа: показывает «играет» или в её веере есть клавиши плеера.
+    pub fn is_media_group(&self, id: NodeId) -> bool {
+        let n = &self.nodes[id];
+        n.state == Some(Flag::Media)
+            || n.children.iter().any(|&k| matches!(self.nodes[k].action, Some(Action::Media(_))))
+    }
+
     /// Номер кольца кнопки: 0 — основные, 1 — веер, 2 — вложенный веер.
     pub fn level(&self, id: NodeId) -> usize {
         let mut n = 0;
