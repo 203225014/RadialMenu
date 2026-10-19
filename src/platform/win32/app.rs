@@ -56,6 +56,7 @@ const TIMER_STEPS: usize = 2;
 /// не основной кнопкой, и перечитывать файлы «по нажатию основной» им не помогло бы.
 const TIMER_RELOAD: usize = 3;
 const RELOAD_MS: u32 = 3000;
+const CAPTURE_DELAY_MS: u32 = 120; // перед снимком экрана: дать системе перерисовать экран без меню
 const ACTION_DELAY_MS: u32 = 30; // дать меню погаснуть и фокусу вернуться к окну под ним
 const TIP: &str = "Радиальное меню";
 
@@ -81,6 +82,8 @@ struct App {
     steps: std::collections::VecDeque<Step>,
     paused: bool,
     layer_moved: bool,
+    /// Меню убрано с экрана до действия-снимка: пока оно не закроется совсем, не показывать его снова.
+    capture_hide: bool,
     /// Размытый снимок экрана под меню, пока оно открыто.
     backdrop: Option<Vec<u8>>,
 }
@@ -328,9 +331,14 @@ fn stop_timer(app: &App) {
 
 fn schedule_action(app: &mut App, action: Option<Action>) {
     if let Some(a) = action {
+        let shot = a.captures_screen();
+        if shot {
+            app.layer.hide(); // меню не должно попасть на снимок
+            app.capture_hide = true;
+        }
         app.pending = Some(a);
         unsafe {
-            SetTimer(Some(util::h(app.hwnd)), TIMER_ACTION, ACTION_DELAY_MS, None);
+            SetTimer(Some(util::h(app.hwnd)), TIMER_ACTION, if shot { CAPTURE_DELAY_MS } else { ACTION_DELAY_MS }, None);
         }
     }
 }
@@ -357,7 +365,9 @@ fn tick() {
             let mut cv = Canvas::new(n, n, app.layer.pixels()).with_backdrop(app.backdrop.as_deref());
             engine.frame(now, (dx as f32, dy as f32), &ctx, &mut cv)
         };
-        if frame.visible {
+        if frame.visible && app.capture_hide {
+            app.layer.hide(); // дорисовывается угасание, но на экран оно не выходит
+        } else if frame.visible {
             app.layer.present(
                 frame.dirty,
                 frame.alpha,
@@ -365,6 +375,7 @@ fn tick() {
             );
             app.layer.show();
         } else {
+            app.capture_hide = false;
             app.layer.hide();
             app.backdrop = None;
             stop_timer(app);
@@ -637,6 +648,7 @@ fn setup() -> Result<HWND, String> {
                 steps: Default::default(),
                 paused: false,
                 layer_moved: true,
+                capture_hide: false,
                 backdrop: None,
             })
         });

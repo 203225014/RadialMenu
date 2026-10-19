@@ -348,6 +348,14 @@ pub enum Action {
 }
 
 impl Action {
+    /// Снимает ли действие экран (PrtScn, Alt+PrtScn, Win+Shift+S): тогда меню надо убрать до него,
+    /// иначе оно попадёт на снимок.
+    pub fn captures_screen(&self) -> bool {
+        let Action::Keys(k) = self else { return false };
+        let has = |codes: &[u16]| k.iter().any(|c| codes.contains(c));
+        has(&[vk::SNAPSHOT]) || (has(&[vk::LWIN, vk::RWIN]) && has(&[vk::SHIFT, vk::LSHIFT, vk::RSHIFT]) && k.contains(&0x53))
+    }
+
     pub fn keys(codes: &[u16]) -> Action {
         Action::Keys(codes.to_vec())
     }
@@ -372,6 +380,17 @@ impl Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screenshot_chords_are_recognised() {
+        let c = |s: &str| Action::Keys(vk::parse_list(s).unwrap());
+        assert!(c("win+shift+s").captures_screen());
+        assert!(c("alt+printscreen").captures_screen());
+        assert!(c("printscreen").captures_screen());
+        assert!(!c("ctrl+c").captures_screen());
+        assert!(!c("win+s").captures_screen());
+        assert!(!Action::Note.captures_screen());
+    }
 
     #[test]
     fn key_names_roundtrip() {
