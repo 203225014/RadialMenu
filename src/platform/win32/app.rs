@@ -37,6 +37,7 @@ use super::ui::layer::Layer;
 use super::ui::tray::{self, Cmd, WM_TRAY};
 use super::ui::{note, settings};
 use crate::engine::Engine;
+use crate::model::action::vk;
 use crate::model::menu_yaml::MenuError;
 use crate::model::{Action, Context, Flag, MenuSet, Settings, Step, Theme, ThemeMode, MAX_PROFILES};
 use crate::platform::theme::Follower;
@@ -445,6 +446,15 @@ fn execute(action: Action) {
         Action::Media(m) => send::tap(m.vk()),
         Action::Volume(up) => send::volume(up),
         Action::Explorer => send::explorer(),
+        Action::Navigate(forward) => {
+            let key = if forward { vk::RIGHT } else { vk::LEFT };
+            super::system::pointer::navigate(hook::frozen(), forward, || send::chord(&[vk::MENU, key]));
+        }
+        Action::ScreenshotWindow => {
+            if let Err(e) = super::system::screenshot::window_to_clipboard(hook::frozen()) {
+                util::log_error(&format!("скриншот окна: {e}"));
+            }
+        }
         Action::Note => {
             if let Some((vault, theme)) = with_app(|app| (app.settings.vault.clone(), app.theme.theme())) {
                 note::open(&vault, theme, set_vault);

@@ -572,7 +572,10 @@ impl Cx<'_> {
                 "explorer" => Action::Explorer,
                 "note" => Action::Note,
                 "settings" => Action::Settings,
-                _ => return Err(format!("action: «{a}» — ожидается explorer, note или settings")),
+                "screenshot-window" => Action::ScreenshotWindow,
+                "back" => Action::Navigate(false),
+                "forward" => Action::Navigate(true),
+                _ => return Err(format!("action: «{a}» — ожидается explorer, note, settings, screenshot-window, back или forward")),
             };
             found.push(("action", act));
         }

@@ -339,6 +339,10 @@ pub enum Action {
     Volume(bool),
     /// Открыть Проводник.
     Explorer,
+    /// «Назад» (`false`) или «вперёд» (`true`) для окна под указателем, а не активного.
+    Navigate(bool),
+    /// Снимок окна под указателем (там, где вызвали меню) в буфер обмена.
+    ScreenshotWindow,
     /// Окно быстрой заметки.
     Note,
     /// Окно настроек.
@@ -351,7 +355,7 @@ impl Action {
     /// Снимает ли действие экран (PrtScn, Alt+PrtScn, Win+Shift+S): тогда меню надо убрать до него,
     /// иначе оно попадёт на снимок.
     pub fn captures_screen(&self) -> bool {
-        let Action::Keys(k) = self else { return false };
+        let Action::Keys(k) = self else { return matches!(self, Action::ScreenshotWindow) };
         let has = |codes: &[u16]| k.iter().any(|c| codes.contains(c));
         has(&[vk::SNAPSHOT]) || (has(&[vk::LWIN, vk::RWIN]) && has(&[vk::SHIFT, vk::LSHIFT, vk::RSHIFT]) && k.contains(&0x53))
     }

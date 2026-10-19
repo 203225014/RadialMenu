@@ -33,7 +33,9 @@
 #    open:   https://ya.ru         ссылка, файл, папка или протокол ("ms-settings:", "mailto:")
 #    media:  prev | next | play-pause | mute
 #    volume: up | down
-#    action: explorer | note | settings
+#    action: explorer | note | settings | screenshot-window
+#            screenshot-window — снимок окна, над которым вызвали меню (не активного), в буфер обмена
+#            back | forward — «назад» / «вперёд» в окне, над которым вызвали меню (не в активном)
 #    steps:  [ { keys: ctrl+a }, { wait: 100 }, { keys: ctrl+c } ]   — несколько действий подряд
 #
 #  ПРОФИЛИ (в конце файла, раздел profiles)
@@ -140,11 +142,11 @@ profiles:
         keys: win+shift+s
         dwell: true
         items:
-          - { label: Скриншот окна, icon: window, keys: alt+printscreen }
-      - { label: Вперёд, icon: arrow-right, keys: alt+right }
+          - { label: Скриншот окна, icon: window, action: screenshot-window }
+      - { label: Вперёд, icon: arrow-right, action: forward }
       - label: Рабочие столы
         icon: desktops
         items:
           - { label: Стол назад, icon: arrow-left, keys: ctrl+win+left }
           - { label: Стол вперёд, icon: arrow-right, keys: ctrl+win+right }
-      - { label: Назад, icon: arrow-left, keys: alt+left }
+      - { label: Назад, icon: arrow-left, action: back }

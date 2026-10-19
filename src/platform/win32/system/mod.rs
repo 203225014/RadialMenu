@@ -6,5 +6,7 @@ pub mod dialogs;
 pub mod files;
 pub mod http;
 pub mod media;
+pub mod pointer;
 pub mod programs;
+pub mod screenshot;
 pub mod util;
