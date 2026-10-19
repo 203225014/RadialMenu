@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "radial_menu"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "fontdue",
  "png",
