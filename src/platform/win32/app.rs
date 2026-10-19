@@ -38,7 +38,7 @@ use super::ui::tray::{self, Cmd, WM_TRAY};
 use super::ui::{note, settings};
 use crate::engine::Engine;
 use crate::model::menu_yaml::MenuError;
-use crate::model::{Action, Context, Flag, MenuSet, Settings, Step, Theme, ThemeMode};
+use crate::model::{Action, Context, Flag, MenuSet, Settings, Step, Theme, ThemeMode, MAX_PROFILES};
 use crate::platform::theme::Follower;
 use crate::platform::update;
 use crate::render::compose::Canvas;
@@ -52,6 +52,10 @@ const BLUR_RADIUS: usize = 1;
 
 const TIMER_ACTION: usize = 1;
 const TIMER_STEPS: usize = 2;
+/// Раз в несколько секунд смотреть, не правили ли config.txt / menu.yaml: профили вызываются
+/// не основной кнопкой, и перечитывать файлы «по нажатию основной» им не помогло бы.
+const TIMER_RELOAD: usize = 3;
+const RELOAD_MS: u32 = 3000;
 const ACTION_DELAY_MS: u32 = 30; // дать меню погаснуть и фокусу вернуться к окну под ним
 const TIP: &str = "Радиальное меню";
 
@@ -190,13 +194,33 @@ fn preview_theme(mode: Option<ThemeMode>) {
 /// Новые настройки: кнопка, сочетание, тема, размеры. Пересобирает только то, что нужно.
 fn apply_settings(app: &mut App, new: Settings) {
     let relayout = app.settings.affects_layout(&new);
-    hook::set_button(new.button);
-    hook::set_hotkey(new.hotkey);
     updater::set_enabled(new.check_updates);
     app.settings = new;
+    sync_triggers(app);
     apply_theme(app);
     if relayout {
         rebuild(app);
+    }
+}
+
+/// Передать хуку, чем вызывается основное меню и каждый профиль. Профиль, который просит ту же
+/// кнопку или то же сочетание, что основное, не включается: основное в настройках главнее.
+fn sync_triggers(app: &App) {
+    hook::set_trigger(0, app.settings.button, app.settings.hotkey);
+    for n in 0..MAX_PROFILES {
+        let (mut button, mut hotkey) = (0, None);
+        if let Some(p) = app.menus.profiles.get(n) {
+            (button, hotkey) = (p.trigger.button, p.trigger.hotkey);
+            if button != 0 && button == app.settings.button {
+                diag::log(&format!("профиль «{}»: кнопка занята основным меню, кнопка профиля не работает", p.name));
+                button = 0;
+            }
+            if hotkey.is_some() && hotkey == app.settings.hotkey {
+                diag::log(&format!("профиль «{}»: сочетание занято основным меню, сочетание профиля не работает", p.name));
+                hotkey = None;
+            }
+        }
+        hook::set_trigger(n + 1, button, hotkey);
     }
 }
 
@@ -220,6 +244,7 @@ fn reload_if_changed(app: &mut App) {
         if menus != app.menus {
             app.menus = menus;
             rebuild(app);
+            sync_triggers(app);
         }
     }
 }
@@ -349,7 +374,7 @@ fn tick() {
     });
 }
 
-fn on_down() {
+fn on_down(profile: usize) {
     let now = util::now();
     // какая программа активна — до показа меню (наше окно фокус не берёт)
     let exe = programs::foreground_exe();
@@ -358,7 +383,9 @@ fn on_down() {
             return false;
         }
         reload_if_changed(app);
-        app.active = app.menus.pick(exe.as_deref()).min(app.engines.len() - 1);
+        // профиль — своё меню; основное — по активной программе
+        let slot = profile.checked_sub(1).and_then(|n| app.menus.profile_slot(n));
+        app.active = slot.unwrap_or_else(|| app.menus.pick(exe.as_deref())).min(app.engines.len() - 1);
         let (fx, fy) = hook::frozen();
         let (mx, my, mw, mh) = util::monitor_at(POINT { x: fx, y: fy });
         app.engine().set_screen((mw, mh));
@@ -483,11 +510,19 @@ unsafe extern "system" fn main_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_RM_DOWN => on_down(),
+        WM_RM_DOWN => on_down(wparam.0),
         WM_RM_UP => on_up(),
         WM_RM_WHEEL => on_wheel(wparam.0 != 0),
         WM_TIMER if wparam.0 == TIMER_ACTION => run_pending(hwnd),
         WM_TIMER if wparam.0 == TIMER_STEPS => next_step(),
+        WM_TIMER if wparam.0 == TIMER_RELOAD => {
+            with_app(|app| {
+                // пока меню открыто, ничего не пересобираем
+                if !app.engines[app.active].is_active() {
+                    reload_if_changed(app);
+                }
+            });
+        }
         WM_SETTINGCHANGE if is_color_change(lparam) => {
             with_app(apply_theme);
             settings::refresh_theme();
@@ -610,6 +645,8 @@ fn setup() -> Result<HWND, String> {
             warn_menu(hwnd.0 as isize, false, e);
         }
         hook::spawn(button, hotkey, hwnd);
+        with_app(|app| sync_triggers(app));
+        SetTimer(Some(hwnd), TIMER_RELOAD, RELOAD_MS, None);
         updater::start(hwnd.0 as isize, with_app(|a| a.settings.check_updates).unwrap_or(true));
         if std::env::args().any(|a| a == "--updated") {
             // установщик перезапустил нас после обновления

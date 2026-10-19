@@ -8,7 +8,12 @@ macro_rules! svg {
 }
 
 /// Все имена, которые можно писать в файле меню (`blank` — кнопка без иконки).
-pub const NAMES: [&str; 17] = [
+pub const NAMES: [&str; 22] = [
+    "arrow-left",
+    "arrow-right",
+    "camera",
+    "window",
+    "desktops",
     "blank",
     "folder",
     "file",
@@ -36,6 +41,11 @@ pub fn exists(key: &str) -> bool {
 pub fn icon(key: &str) -> Option<&'static str> {
     match key {
         "blank" => None,
+        "arrow-left" => svg!("arrow-left"),
+        "arrow-right" => svg!("arrow-right"),
+        "camera" => svg!("camera"),
+        "window" => svg!("window"),
+        "desktops" => svg!("desktops"),
         "folder" => svg!("folder"),
         "file" => svg!("file"),
         "gear" => svg!("gear"),

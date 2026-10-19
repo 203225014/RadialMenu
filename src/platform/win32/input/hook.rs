@@ -37,10 +37,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::model::action::vk;
-use crate::model::Chord;
+use crate::model::{Chord, MAX_PROFILES};
 use crate::platform::win32::system::util;
 
-/// Сообщения главному окну.
+/// Сообщения главному окну. `WM_RM_DOWN`: wParam — номер профиля (0 — основное меню).
 pub const WM_RM_DOWN: u32 = WM_APP + 1;
 pub const WM_RM_UP: u32 = WM_APP + 2;
 /// wParam: 1 — колесо вверх, 0 — вниз.
@@ -62,11 +62,26 @@ const SRC_KEYS: u8 = 2;
 /// не открыло меню окна или «Пуск» (сочетание-то мы проглотили).
 const MASK_KEY: u16 = 0xE8;
 
-struct Shared {
+/// Способ вызова одного профиля.
+struct Slot {
     /// 0 — мышь не используется, 1 или 2 — какая боковая кнопка.
     button: AtomicU32,
     /// Сочетание: клавиша | модификаторы << 16; 0 — не задано.
     hotkey: AtomicU32,
+}
+
+/// Профилей всего: основное меню (0) и дополнительные.
+const SLOTS: usize = 1 + MAX_PROFILES;
+
+#[allow(clippy::declare_interior_mutable_const)]
+const NO_SLOT: Slot = Slot { button: AtomicU32::new(0), hotkey: AtomicU32::new(0) };
+
+struct Shared {
+    /// Способы вызова по номерам профилей.
+    slots: [Slot; SLOTS],
+    /// Профиль, меню которого сейчас открыто, и чем оно удерживается (кнопка мыши).
+    active: AtomicU8,
+    cap_button: AtomicU32,
     /// Выключатель («Пауза» в трее): выключен — все события идут дальше как обычно.
     enabled: AtomicBool,
     /// Кто держит меню открытым (`SRC_*`).
@@ -95,8 +110,9 @@ struct Shared {
 }
 
 static SHARED: Shared = Shared {
-    button: AtomicU32::new(1),
-    hotkey: AtomicU32::new(0),
+    slots: [Slot { button: AtomicU32::new(1), hotkey: AtomicU32::new(0) }, NO_SLOT, NO_SLOT, NO_SLOT],
+    active: AtomicU8::new(0),
+    cap_button: AtomicU32::new(0),
     enabled: AtomicBool::new(true),
     capture: AtomicU8::new(SRC_NONE),
     recorder: AtomicIsize::new(0),
@@ -117,14 +133,13 @@ static SHARED: Shared = Shared {
 
 // ---------------------------------------------------------------- интерфейс для главного потока
 
-/// Какую боковую кнопку слушать (0 — никакую, 1 — «назад», 2 — «вперёд»).
-pub fn set_button(button: u8) {
-    SHARED.button.store(button.min(2) as u32, Relaxed);
-}
-
-/// Сочетание клавиш для меню (`None` — только мышь).
-pub fn set_hotkey(chord: Option<Chord>) {
-    SHARED.hotkey.store(chord.map_or(0, pack), Relaxed);
+/// Чем вызывается профиль `profile` (0 — основное меню): боковая кнопка (0 — никакая, 1 — «назад»,
+/// 2 — «вперёд») и/или сочетание клавиш.
+pub fn set_trigger(profile: usize, button: u8, hotkey: Option<Chord>) {
+    if let Some(slot) = SHARED.slots.get(profile) {
+        slot.button.store(button.min(2) as u32, Relaxed);
+        slot.hotkey.store(hotkey.map_or(0, pack), Relaxed);
+    }
 }
 
 /// Пауза: выключенный хук пропускает все события дальше.
@@ -244,7 +259,7 @@ fn send_mask_key() {
 }
 
 /// Меню вызвано: запомнить, где курсор, и выбрать способ считать сдвиги.
-fn begin(src: u8, at: (i32, i32)) {
+fn begin(src: u8, profile: usize, at: (i32, i32)) {
     let s = &SHARED;
     s.dx.store(0, Relaxed);
     s.dy.store(0, Relaxed);
@@ -254,8 +269,9 @@ fn begin(src: u8, at: (i32, i32)) {
     s.last_y.store(at.1, Relaxed);
     // режим выбираем на каждый вызов: RDP мог подключиться позже запуска
     s.use_raw.store(s.raw_ok.load(Relaxed) && !remote_session(), Relaxed);
+    s.active.store(profile as u8, Relaxed);
     s.capture.store(src, Relaxed);
-    post(WM_RM_DOWN, 0);
+    post(WM_RM_DOWN, profile);
 }
 
 /// Отпустили то, чем держали меню.
@@ -283,17 +299,21 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         match wparam.0 as u32 {
             m @ (WM_XBUTTONDOWN | WM_XBUTTONUP) => {
                 let which = (info.mouseData >> 16) & 0xFFFF;
-                let ours = s.button.load(Relaxed);
-                if ours != 0 && which == ours {
+                let profile = (0..SLOTS).find(|&p| {
+                    let b = s.slots[p].button.load(Relaxed);
+                    b != 0 && b == which
+                });
+                if let Some(profile) = profile {
                     if info.flags & LLMHF_INJECTED != 0 && tick_ms() < s.pass_until.load(Relaxed) {
                         return CallNextHookEx(None, code, wparam, lparam);
                     }
                     if m == WM_XBUTTONDOWN {
                         if !capturing {
-                            begin(SRC_MOUSE, (info.pt.x, info.pt.y));
+                            s.cap_button.store(which, Relaxed);
+                            begin(SRC_MOUSE, profile, (info.pt.x, info.pt.y));
                             return LRESULT(1);
                         }
-                    } else if end(SRC_MOUSE) {
+                    } else if s.cap_button.load(Relaxed) == which && end(SRC_MOUSE) {
                         // отпускание глотаем, только если глотали нажатие
                         return LRESULT(1);
                     }
@@ -359,32 +379,42 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         return CallNextHookEx(None, code, wparam, lparam);
     }
 
-    let hk = s.hotkey.load(Relaxed);
-    if hk == 0 || !s.enabled.load(Relaxed) || key as u32 != hk & 0xFFFF {
+    if !s.enabled.load(Relaxed) {
         return CallNextHookEx(None, code, wparam, lparam);
     }
-    let mods = hk >> 16;
-    if down {
-        match s.capture.load(Relaxed) {
-            SRC_KEYS => {
-                // автоповтор, пока держат: заодно знак сторожу, что клавиша ещё зажата
+    match s.capture.load(Relaxed) {
+        SRC_KEYS => {
+            // держат сочетание того профиля, что открыт
+            let hk = s.slots[s.active.load(Relaxed) as usize % SLOTS].hotkey.load(Relaxed);
+            if hk != 0 && key as u32 == hk & 0xFFFF {
+                if down {
+                    // автоповтор, пока держат: заодно знак сторожу, что клавиша ещё зажата
+                    s.key_tick.store(tick_ms(), Relaxed);
+                    return LRESULT(1);
+                }
+                if up && end(SRC_KEYS) {
+                    if (hk >> 16) & (MOD_ALT | MOD_WIN) != 0 {
+                        send_mask_key();
+                    }
+                    return LRESULT(1);
+                }
+            }
+        }
+        SRC_NONE if down => {
+            let now = mods_now();
+            let profile = (0..SLOTS).find(|&p| {
+                let hk = s.slots[p].hotkey.load(Relaxed);
+                hk != 0 && key as u32 == hk & 0xFFFF && now == hk >> 16
+            });
+            if let Some(profile) = profile {
+                let mut pt = POINT::default();
+                let _ = GetCursorPos(&mut pt);
                 s.key_tick.store(tick_ms(), Relaxed);
+                begin(SRC_KEYS, profile, (pt.x, pt.y));
                 return LRESULT(1);
             }
-            SRC_NONE if mods_now() == mods => {
-                let mut p = POINT::default();
-                let _ = GetCursorPos(&mut p);
-                s.key_tick.store(tick_ms(), Relaxed);
-                begin(SRC_KEYS, (p.x, p.y));
-                return LRESULT(1);
-            }
-            _ => {}
         }
-    } else if up && end(SRC_KEYS) {
-        if mods & (MOD_ALT | MOD_WIN) != 0 {
-            send_mask_key();
-        }
-        return LRESULT(1);
+        _ => {}
     }
     CallNextHookEx(None, code, wparam, lparam)
 }
@@ -530,12 +560,13 @@ impl Liveness {
 unsafe fn watchdog(stuck_ticks: &mut u32) {
     let s = &SHARED;
     let capture = s.capture.load(Relaxed);
-    let button = s.button.load(Relaxed);
     // боковая «зажата» без меню — утечка (хук не успел ответить); отпускаем сами,
     // иначе клики перестают работать
-    if button != 0 && capture == SRC_NONE && s.enabled.load(Relaxed) {
-        let vkb = if button == 1 { VK_XBUTTON1 } else { VK_XBUTTON2 };
-        if key_down(vkb.0) {
+    if capture == SRC_NONE && s.enabled.load(Relaxed) {
+        let stuck = s.slots.iter().map(|sl| sl.button.load(Relaxed)).find(|&b| {
+            b != 0 && key_down(if b == 1 { VK_XBUTTON1 } else { VK_XBUTTON2 }.0)
+        });
+        if let Some(button) = stuck {
             *stuck_ticks += 1;
             if *stuck_ticks >= 2 {
                 release_stuck(button);
@@ -547,7 +578,7 @@ unsafe fn watchdog(stuck_ticks: &mut u32) {
     *stuck_ticks = 0;
     // клавишу сочетания отпустили, а мы не заметили — закрыть меню
     if capture == SRC_KEYS {
-        let mods = s.hotkey.load(Relaxed) >> 16;
+        let mods = s.slots[s.active.load(Relaxed) as usize % SLOTS].hotkey.load(Relaxed) >> 16;
         let quiet = tick_ms().saturating_sub(s.key_tick.load(Relaxed));
         if keys_released(quiet, repeat_delay_ms(), mods, mods_now()) {
             end(SRC_KEYS);
@@ -617,8 +648,7 @@ fn thread_main() {
 
 /// Запустить поток хуков. `main` — окно, которому они шлют события.
 pub fn spawn(button: u8, hotkey: Option<Chord>, main: HWND) {
-    set_button(button);
-    set_hotkey(hotkey);
+    set_trigger(0, button, hotkey);
     SHARED.main_hwnd.store(main.0 as isize, Relaxed);
     std::thread::Builder::new()
         .name("input-hooks".into())

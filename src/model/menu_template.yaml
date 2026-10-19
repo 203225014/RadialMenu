@@ -36,6 +36,15 @@
 #    action: explorer | note | settings
 #    steps:  [ { keys: ctrl+a }, { wait: 100 }, { keys: ctrl+c } ]   — несколько действий подряд
 #
+#  ПРОФИЛИ (в конце файла, раздел profiles)
+#    Отдельные меню на другую боковую кнопку и/или сочетание клавиш (до 3). Основное меню
+#    вызывается тем, что выбрано в «Настройках»; если профиль просит ту же кнопку или то же
+#    сочетание, что основное, он не работает.
+#      name:    название (для себя)
+#      button:  back | forward — боковая кнопка мыши
+#      hotkey:  ctrl+alt+n — сочетание (держать, пока меню открыто); можно вместе с button
+#      layout:  как выше; menu: — кнопки, как в основном меню
+#
 #  В путях можно писать переменные окружения: "%USERPROFILE%/Downloads".
 #
 #  ВСТРОЕННЫЕ ИКОНКИ
@@ -115,3 +124,27 @@ menu:                 # основные кнопки — до 12, круг ра
 #       - { label: Терминал, keys: "ctrl+`" }
 #       - { label: Файлы, keys: ctrl+p }
 #       - { label: Поиск, keys: ctrl+shift+f }
+
+# <<< конец примеров
+
+# Профиль на боковую кнопку «вперёд»: ведите мышь в сторону, как по жесту.
+#   влево / вправо — назад / вперёд по страницам; вверх — скриншот области, задержаться — скриншот окна;
+#   вниз — веер из двух кнопок: рабочий стол назад / вперёд.
+profiles:
+  - name: Навигация
+    button: forward
+    layout: { start: top }
+    menu:
+      - label: Скриншот
+        icon: camera
+        keys: win+shift+s
+        dwell: true
+        items:
+          - { label: Скриншот окна, icon: window, keys: alt+printscreen }
+      - { label: Вперёд, icon: arrow-right, keys: alt+right }
+      - label: Рабочие столы
+        icon: desktops
+        items:
+          - { label: Стол назад, icon: arrow-left, keys: ctrl+win+left }
+          - { label: Стол вперёд, icon: arrow-right, keys: ctrl+win+right }
+      - { label: Назад, icon: arrow-left, keys: alt+left }

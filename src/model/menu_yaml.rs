@@ -8,7 +8,11 @@ use serde::Deserialize;
 
 use super::action::{vk, Action, Media, Run, Step};
 use super::icon::IconRef;
-use super::menu::{AppMenu, Flag, Item, Menu, MenuSet, Shape, Variant, MAX_DEPTH, MAX_KIDS, MAX_SUB, MAX_TOP};
+use super::action::Chord;
+use super::menu::{
+    AppMenu, Flag, Item, Menu, MenuSet, Profile, Shape, Trigger, Variant, MAX_DEPTH, MAX_KIDS, MAX_PROFILES, MAX_SUB,
+    MAX_TOP,
+};
 
 /// Шаблон menu.yaml: меню по умолчанию и описание формата с примерами.
 pub const TEMPLATE: &str = include_str!("menu_template.yaml");
@@ -40,6 +44,8 @@ struct Doc {
     menu: Vec<ItemDoc>,
     #[serde(default)]
     apps: Vec<AppDoc>,
+    #[serde(default)]
+    profiles: Vec<ProfileDoc>,
 }
 
 #[derive(Deserialize, Default)]
@@ -68,6 +74,27 @@ struct AppDoc {
     menu: Vec<ItemDoc>,
     #[serde(default)]
     layout: Option<LayoutDoc>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileDoc {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    button: Option<ButtonDoc>,
+    #[serde(default)]
+    hotkey: Option<String>,
+    menu: Vec<ItemDoc>,
+    #[serde(default)]
+    layout: Option<LayoutDoc>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ButtonDoc {
+    Num(u8),
+    Name(String),
 }
 
 #[derive(Deserialize)]
@@ -219,7 +246,26 @@ pub fn parse(text: &str, base: Option<&Path>, is_icon: &dyn Fn(&str) -> bool) ->
         let menu = cx.menu(&a.menu, shape, &at).map_err(sem)?;
         apps.push(AppMenu { exes, menu });
     }
-    Ok(MenuSet { main, apps })
+    let mut profiles: Vec<Profile> = Vec::new();
+    if doc.profiles.len() > MAX_PROFILES {
+        return Err(sem(format!("profiles: не больше {MAX_PROFILES} профилей")));
+    }
+    for (i, p) in doc.profiles.iter().enumerate() {
+        let name = p.name.clone().unwrap_or_default();
+        let at = format!("profiles {} ({name}) → ", i + 1);
+        let trigger = cx.trigger(p, &at).map_err(sem)?;
+        for (j, other) in profiles.iter().enumerate() {
+            let same_button = trigger.button != 0 && trigger.button == other.trigger.button;
+            let same_key = trigger.hotkey.is_some() && trigger.hotkey == other.trigger.hotkey;
+            if same_button || same_key {
+                return Err(sem(format!("{at}тот же способ вызова, что у профиля {}", j + 1)));
+            }
+        }
+        let shape = cx.shape(p.layout.as_ref(), main.shape).map_err(sem)?;
+        let menu = cx.menu(&p.menu, shape, &at).map_err(sem)?;
+        profiles.push(Profile { name, trigger, menu });
+    }
+    Ok(MenuSet { main, apps, profiles })
 }
 
 /// Сообщения serde_yaml_ng — на понятный язык (самые частые случаи).
@@ -244,6 +290,7 @@ fn friendly(msg: &str) -> String {
         ("untagged enum ArgsDoc", "args: ожидается строка или список строк"),
         ("untagged enum StartDoc", "start: ожидается top, right, bottom, left или угол"),
         ("untagged enum OneOrMany", "match: ожидается имя программы или список имён"),
+        ("untagged enum ButtonDoc", "button: ожидается back, forward, 1 или 2"),
     ] {
         if m.contains(needle) {
             return hint.into();
@@ -308,6 +355,31 @@ impl Cx<'_> {
             Some(b) if p.is_relative() => b.join(p),
             _ => p,
         }
+    }
+
+    /// Способ вызова профиля: `button` (back/forward или 1/2) и/или `hotkey`.
+    fn trigger(&self, p: &ProfileDoc, at: &str) -> Result<Trigger, String> {
+        let button = match &p.button {
+            None => 0,
+            Some(ButtonDoc::Num(n @ (1 | 2))) => *n,
+            Some(ButtonDoc::Name(s)) => match s.trim().to_lowercase().as_str() {
+                "back" | "назад" => 1,
+                "forward" | "вперёд" | "вперед" => 2,
+                "none" | "" => 0,
+                other => return Err(format!("{at}button: «{other}» — ожидается back или forward")),
+            },
+            Some(ButtonDoc::Num(n)) => return Err(format!("{at}button: {n} — ожидается 1 (back) или 2 (forward)")),
+        };
+        let hotkey = match &p.hotkey {
+            Some(h) if !h.trim().is_empty() => {
+                Some(Chord::parse(h).map_err(|e| format!("{at}hotkey: {e}"))?)
+            }
+            _ => None,
+        };
+        if button == 0 && hotkey.is_none() {
+            return Err(format!("{at}укажите button (back или forward) или hotkey"));
+        }
+        Ok(Trigger { button, hotkey })
     }
 
     fn shape(&self, doc: Option<&LayoutDoc>, mut s: Shape) -> Result<Shape, String> {
@@ -620,6 +692,58 @@ mod tests {
     }
 
     #[test]
+    fn template_has_the_navigation_profile() {
+        let set = parse(TEMPLATE, None, &crate::render::assets::exists).unwrap();
+        assert_eq!(set.profiles.len(), 1);
+        let p = &set.profiles[0];
+        assert_eq!((p.trigger.button, p.trigger.hotkey), (2, None));
+        let top: Vec<_> = p.menu.top().iter().map(|&i| p.menu.node(i).label.clone()).collect();
+        // сверху, справа, снизу, слева
+        assert_eq!(top, ["Скриншот", "Вперёд", "Рабочие столы", "Назад"]);
+        let shot = p.menu.top()[0];
+        assert!(p.menu.node(shot).dwell && p.menu.children(shot).len() == 1, "скриншот окна — по задержке");
+        assert_eq!(p.menu.children(p.menu.top()[2]).len(), 2, "рабочие столы — веер из двух");
+    }
+
+    #[test]
+    fn profiles_have_triggers() {
+        let base = "menu:
+  - { label: A, action: note }
+profiles:
+";
+        let one_profile = |head: &str| one(&format!("{base}  - {{ {head}, menu: [ {{ label: B, action: note }} ] }}
+"));
+        let set = one_profile("name: X, button: back").unwrap();
+        assert_eq!(set.profiles[0].trigger.button, 1);
+        assert_eq!(set.profiles[0].name, "X");
+        assert_eq!(one_profile("button: 2").unwrap().profiles[0].trigger.button, 2);
+        let k = one_profile("hotkey: ctrl+alt+n").unwrap();
+        assert_eq!(k.profiles[0].trigger.hotkey.unwrap().to_text(), "ctrl+alt+n");
+        assert!(one_profile("name: X").unwrap_err().to_string().contains("укажите button"));
+        assert!(one_profile("button: sideways").unwrap_err().to_string().contains("back или forward"));
+        assert!(one_profile("button: 3").unwrap_err().to_string().contains("1 (back) или 2 (forward)"));
+        assert!(one_profile("hotkey: ctrl+").unwrap_err().to_string().contains("hotkey"));
+    }
+
+    #[test]
+    fn profiles_cannot_share_a_trigger() {
+        let text = "menu:
+  - { label: A, action: note }
+profiles:
+  - { button: forward, menu: [ { label: B, action: note } ] }
+  - { button: 2, menu: [ { label: C, action: note } ] }
+";
+        assert!(err(text).contains("тот же способ вызова, что у профиля 1"), "{}", err(text));
+        let many = "menu:
+  - { label: A, action: note }
+profiles:
+".to_string()
+            + &(0..4).map(|i| format!("  - {{ hotkey: ctrl+alt+{}, menu: [ {{ label: B, action: note }} ] }}
+", (b'a' + i) as char)).collect::<String>();
+        assert!(err(&many).contains("не больше 3"));
+    }
+
+    #[test]
     fn template_examples_are_valid_when_uncommented() {
         // раскомментированные примеры из шаблона должны разбираться без правок
         let mut text = String::new();
@@ -627,6 +751,10 @@ mod tests {
         for line in TEMPLATE.lines() {
             if line.starts_with("# >>> пример") {
                 in_examples = true;
+                continue;
+            }
+            if line.starts_with("# <<< конец примеров") {
+                in_examples = false;
                 continue;
             }
             if in_examples {

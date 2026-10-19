@@ -1,7 +1,7 @@
 //! Дерево меню. Данные плоские (арена), поведение — данные, а не замыкания:
 //! меню описывается файлом (см. `menu_yaml`), проверяется и строится при запуске.
 
-use super::action::{Action, Media};
+use super::action::{Action, Chord, Media};
 use super::icon::IconRef;
 
 pub type NodeId = usize;
@@ -366,11 +366,30 @@ pub struct AppMenu {
     pub menu: Menu,
 }
 
-/// Всё содержимое файла меню: общее меню и меню для отдельных программ.
+/// Чем вызывается профиль: боковой кнопкой мыши (1 — «назад», 2 — «вперёд») и/или сочетанием клавиш.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Trigger {
+    pub button: u8,
+    pub hotkey: Option<Chord>,
+}
+
+/// Отдельное меню со своим способом вызова (у основного вызов — в настройках).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Profile {
+    pub name: String,
+    pub trigger: Trigger,
+    pub menu: Menu,
+}
+
+/// Сколько профилей, кроме основного, можно завести.
+pub const MAX_PROFILES: usize = 3;
+
+/// Всё содержимое файла меню: общее меню, меню для отдельных программ и профили.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuSet {
     pub main: Menu,
     pub apps: Vec<AppMenu>,
+    pub profiles: Vec<Profile>,
 }
 
 impl MenuSet {
@@ -378,12 +397,20 @@ impl MenuSet {
         MenuSet {
             main,
             apps: Vec::new(),
+            profiles: Vec::new(),
         }
     }
 
-    /// Все меню по порядку: 0 — общее, дальше — для программ.
+    /// Все меню по порядку: 0 — общее, дальше — для программ, потом профили.
     pub fn menus(&self) -> impl Iterator<Item = &Menu> {
-        std::iter::once(&self.main).chain(self.apps.iter().map(|a| &a.menu))
+        std::iter::once(&self.main)
+            .chain(self.apps.iter().map(|a| &a.menu))
+            .chain(self.profiles.iter().map(|p| &p.menu))
+    }
+
+    /// Номер меню (как в `menus`) для профиля `n` (с 0, в порядке файла).
+    pub fn profile_slot(&self, n: usize) -> Option<usize> {
+        (n < self.profiles.len()).then_some(1 + self.apps.len() + n)
     }
 
     /// Номер меню (как в `menus`) для активной программы (`code.exe`, регистр не важен).
@@ -483,12 +510,15 @@ mod tests {
             main: default_menu(),
             apps: vec![AppMenu {
                 exes: vec!["code.exe".into(), "cursor.exe".into()],
-                menu: other,
+                menu: other.clone(),
             }],
+            profiles: vec![Profile { name: "P".into(), trigger: Trigger { button: 2, hotkey: None }, menu: other }],
         };
         assert_eq!(set.pick(Some("Code.EXE")), 1);
         assert_eq!(set.pick(Some("explorer.exe")), 0);
         assert_eq!(set.pick(None), 0);
-        assert_eq!(set.menus().count(), 2);
+        assert_eq!(set.menus().count(), 3);
+        assert_eq!(set.profile_slot(0), Some(2));
+        assert_eq!(set.profile_slot(1), None);
     }
 }
