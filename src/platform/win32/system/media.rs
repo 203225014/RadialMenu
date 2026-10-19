@@ -1,4 +1,4 @@
-//! Что сейчас играет: сессия мультимедиа Windows (та же, что показывает громкость и плеер в
+//! Что сейчас играет (название, исполнитель, пауза): сессия мультимедиа Windows (та же, что показывает громкость и плеер в
 //! системной панели) — любой плеер: браузер, Spotify, проигрыватели. Спрашивать приходится
 //! через WinRT, это ждёт ответа, поэтому опрос идёт в своём потоке и только пока меню открыто.
 
@@ -12,25 +12,24 @@ use windows::Media::Control::{
 };
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
-static TRACK: Mutex<Option<String>> = Mutex::new(None);
+use crate::render::raster::Track;
+
+static TRACK: Mutex<Option<Track>> = Mutex::new(None);
 static WANTED: AtomicBool = AtomicBool::new(false);
 static START: Once = Once::new();
 
-/// «Название — Исполнитель»; на паузе — с пометкой. `None` — ничего не выбрано.
-pub fn caption(title: &str, artist: &str, paused: bool) -> Option<String> {
+/// Название и исполнитель; `None`, если оба пусты.
+pub fn track(title: &str, artist: &str, paused: bool) -> Option<Track> {
     let (title, artist) = (title.trim(), artist.trim());
     if title.is_empty() && artist.is_empty() {
         return None;
     }
-    let base = match (title.is_empty(), artist.is_empty()) {
-        (false, false) => format!("{title} — {artist}"),
-        (false, true) => title.to_string(),
-        _ => artist.to_string(),
-    };
-    Some(if paused { format!("Пауза: {base}") } else { base })
+    // нет названия — исполнитель идёт первой строкой
+    let (title, artist) = if title.is_empty() { (artist, "") } else { (title, artist) };
+    Some(Track { title: title.to_string(), artist: artist.to_string(), paused })
 }
 
-fn fetch() -> Option<String> {
+fn fetch() -> Option<Track> {
     let manager = Manager::RequestAsync().ok()?.get().ok()?;
     let session = manager.GetCurrentSession().ok()?;
     let status = session.GetPlaybackInfo().ok()?.PlaybackStatus().ok()?;
@@ -40,7 +39,7 @@ fn fetch() -> Option<String> {
         _ => return None, // остановлено, закрыто, меняется — показывать нечего
     };
     let props = session.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
-    caption(&props.Title().ok()?.to_string(), &props.Artist().map(|a| a.to_string()).unwrap_or_default(), paused)
+    track(&props.Title().ok()?.to_string(), &props.Artist().map(|a| a.to_string()).unwrap_or_default(), paused)
 }
 
 /// Запустить опрос (один раз за процесс).
@@ -76,7 +75,7 @@ pub fn set_wanted(on: bool) {
 }
 
 /// Последний известный трек.
-pub fn current() -> Option<String> {
+pub fn current() -> Option<Track> {
     TRACK.lock().ok().and_then(|t| t.clone())
 }
 
@@ -85,12 +84,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn captions() {
-        assert_eq!(caption("Песня", "Группа", false).as_deref(), Some("Песня — Группа"));
-        assert_eq!(caption("  Песня ", "", false).as_deref(), Some("Песня"));
-        assert_eq!(caption("", "Группа", false).as_deref(), Some("Группа"));
-        assert_eq!(caption("Песня", "Группа", true).as_deref(), Some("Пауза: Песня — Группа"));
-        assert_eq!(caption(" ", "", false), None);
+    fn tracks() {
+        let t = track(" Песня ", "Группа", false).unwrap();
+        assert_eq!((t.title.as_str(), t.artist.as_str(), t.paused), ("Песня", "Группа", false));
+        let t = track("", "Группа", true).unwrap();
+        assert_eq!((t.title.as_str(), t.artist.as_str(), t.paused), ("Группа", "", true));
+        assert_eq!(track(" ", "", false), None);
     }
 
     /// Живой запрос к системе: `cargo test live_media -- --ignored --nocapture` (пока что-то играет).

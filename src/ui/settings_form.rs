@@ -29,6 +29,7 @@ const R_DWELL: usize = 5;
 const R_VAULT: usize = 6;
 const R_AUTO: usize = 7;
 const R_MENU: usize = 8;
+const R_UPDATE: usize = 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slider {
@@ -89,6 +90,8 @@ pub enum Target {
     Browse,
     Autostart,
     MenuFile,
+    /// Кнопка в строке «Обновление» (что она делает — зависит от состояния).
+    Update,
     Cancel,
     Save,
 }
@@ -116,6 +119,28 @@ pub enum Cmd {
     DragWindow,
     /// Перевести фокус в поле пути.
     FocusVault,
+    /// Спросить, не вышла ли новая версия.
+    CheckUpdates,
+    /// Скачать и установить найденную версию.
+    Update,
+}
+
+/// Что известно об обновлении (платформа обновляет это, пока окно открыто).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum UpdateView {
+    /// Ещё не проверяли.
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    /// Доступна версия (текст версии).
+    Available(String),
+    /// Скачивание, %.
+    Downloading(u8),
+    /// Скачано, запускается установщик.
+    Installing,
+    /// Не получилось; `retry` — можно повторить скачивание (а не только проверку).
+    Failed { msg: String, retry: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,6 +194,9 @@ pub struct SettingsForm {
     /// Запускать с ОС (хранится не в файле настроек, а в системе).
     pub autostart: bool,
     pub status: Option<Status>,
+    /// Версия этой сборки, «0.8.0».
+    pub version: String,
+    pub update: UpdateView,
     scale: f32,
     hover: Option<Target>,
     pressed: Option<Target>,
@@ -176,7 +204,7 @@ pub struct SettingsForm {
     recording: bool,
 }
 
-const ROWS: [&str; 9] = [
+const ROWS: [&str; 10] = [
     "Тема",
     "Кнопка мыши",
     "Сочетание клавиш",
@@ -186,6 +214,7 @@ const ROWS: [&str; 9] = [
     "Хранилище заметок",
     "Запуск с системой",
     "Состав меню",
+    "Обновление",
 ];
 
 impl SettingsForm {
@@ -194,6 +223,8 @@ impl SettingsForm {
             draft: settings,
             autostart,
             status: None,
+            version: String::new(),
+            update: UpdateView::Idle,
             scale: scale.max(0.5),
             hover: None,
             pressed: None,
@@ -325,6 +356,25 @@ impl SettingsForm {
         self.control(R_MENU, 190.0)
     }
 
+    /// Кнопка строки «Обновление» и её подпись; `None` — пока идёт работа, кнопки нет.
+    fn update_button(&self) -> Option<(Box2, &'static str, bool)> {
+        let (label, primary) = match &self.update {
+            UpdateView::Idle | UpdateView::UpToDate => ("Проверить", false),
+            UpdateView::Available(_) => ("Обновить", true),
+            UpdateView::Failed { retry: true, .. } => ("Повторить", true),
+            UpdateView::Failed { .. } => ("Проверить", false),
+            UpdateView::Checking | UpdateView::Downloading(_) | UpdateView::Installing => return None,
+        };
+        let c = self.control(R_UPDATE, BTN_W);
+        Some((Box2 { x: self.s(W - PAD - BTN_W), ..c }, label, primary))
+    }
+
+    /// Левая часть строки «Обновление»: текст и полоса прогресса.
+    fn update_text_box(&self) -> Box2 {
+        let w = if self.update_button().is_some() { Self::ctrl_w() - BTN_W - 12.0 } else { Self::ctrl_w() };
+        self.control(R_UPDATE, w)
+    }
+
     fn footer_boxes(&self) -> (Box2, Box2) {
         let y = Self::footer_y() + 16.0;
         let save = self.b(W - PAD - BTN_W, y, BTN_W, CTRL_H + 2.0);
@@ -364,6 +414,7 @@ impl SettingsForm {
             (self.browse_box(), Target::Browse),
             (self.toggle_box(), Target::Autostart),
             (self.menu_file_box(), Target::MenuFile),
+            (self.update_button().map_or(Box2 { x: -1.0, y: -1.0, w: 0.0, h: 0.0 }, |b| b.0), Target::Update),
             (cancel, Target::Cancel),
             (save, Target::Save),
         ]
@@ -484,6 +535,11 @@ impl SettingsForm {
             }
             Target::Browse => Cmd::Browse,
             Target::MenuFile => Cmd::OpenMenuFile,
+            Target::Update => match self.update {
+                UpdateView::Available(_) | UpdateView::Failed { retry: true, .. } => Cmd::Update,
+                UpdateView::Idle | UpdateView::UpToDate | UpdateView::Failed { .. } => Cmd::CheckUpdates,
+                _ => Cmd::Redraw,
+            },
             _ => Cmd::Redraw,
         }
     }
@@ -673,6 +729,8 @@ impl SettingsForm {
 
         self.button(p, f, &c, self.menu_file_box(), "Открыть menu.yaml", Target::MenuFile, false);
 
+        self.draw_update(p, f, &c);
+
         // низ: строка состояния и кнопки
         let fy = self.s(Self::footer_y());
         p.line(self.s(PAD), fy, w - self.s(PAD), fy, c.edge, 0.25, 1.0);
@@ -691,6 +749,41 @@ impl SettingsForm {
         }
         self.button(p, f, &c, cancel, "Отмена", Target::Cancel, false);
         self.button(p, f, &c, save, "Сохранить", Target::Save, true);
+    }
+
+    /// Строка «Обновление»: версия, состояние, кнопка или полоса прогресса.
+    fn draw_update(&self, p: &mut Painter, f: &Fonts, c: &Ui) {
+        let t = self.update_text_box();
+        let (top, bottom) = (t.y + t.h * 0.28, t.y + t.h * 0.78);
+        p.text(&f.regular, &format!("Версия {}", self.version), t.x, top, self.s(13.0), c.fg, Align::Left);
+        let bar = |p: &mut Painter, part: f32| {
+            let (h, y) = (self.s(6.0), bottom - self.s(3.0));
+            p.fill_rrect(t.x, y, t.w, h, h / 2.0, blend(c.bg2, c.dim, 0.35), 1.0);
+            if part > 0.0 {
+                p.fill_rrect(t.x, y, (t.w * part.min(1.0)).max(h), h, h / 2.0, c.acc, 1.0);
+            }
+        };
+        let note = |p: &mut Painter, text: &str, col: u32| {
+            p.text_clipped(&f.regular, text, t.x, bottom, self.s(12.0), col, t.w);
+        };
+        match &self.update {
+            UpdateView::Idle => note(p, "Ещё не проверялось", c.dim),
+            UpdateView::Checking => note(p, "Проверяю…", c.dim),
+            UpdateView::UpToDate => note(p, "Установлена последняя версия", c.ok),
+            UpdateView::Available(v) => note(p, &format!("Доступна версия {v}"), c.acc),
+            UpdateView::Downloading(pct) => {
+                p.text(&f.regular, &format!("Скачиваю обновление — {pct} %"), t.x, top, self.s(13.0), c.fg, Align::Left);
+                bar(p, *pct as f32 / 100.0);
+            }
+            UpdateView::Installing => {
+                p.text(&f.regular, "Устанавливаю и перезапускаю…", t.x, top, self.s(13.0), c.fg, Align::Left);
+                bar(p, 1.0);
+            }
+            UpdateView::Failed { msg, .. } => note(p, msg, c.bad),
+        }
+        if let Some((b, label, primary)) = self.update_button() {
+            self.button(p, f, c, b, label, Target::Update, primary);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -790,6 +883,7 @@ mod tests {
             (f.browse_box(), Target::Browse),
             (f.toggle_box(), Target::Autostart),
             (f.menu_file_box(), Target::MenuFile),
+            (f.update_button().unwrap().0, Target::Update),
             (f.hotkey_box(), Target::Hotkey),
             (f.clear_box(), Target::ClearHotkey),
         ];
@@ -829,6 +923,36 @@ mod tests {
         assert_eq!(click(&mut f, b), Cmd::OpenMenuFile);
         let b = f.vault_box();
         assert_eq!(click(&mut f, b), Cmd::FocusVault);
+    }
+
+    fn click_update(f: &mut SettingsForm) -> Cmd {
+        match f.update_button() {
+            Some((b, _, _)) => click(f, b),
+            None => Cmd::None,
+        }
+    }
+
+    #[test]
+    fn update_button_depends_on_state() {
+        let mut f = form();
+        f.version = "0.8.0".into();
+        assert_eq!(click_update(&mut f), Cmd::CheckUpdates);
+        f.update = UpdateView::UpToDate;
+        assert_eq!(click_update(&mut f), Cmd::CheckUpdates);
+        f.update = UpdateView::Available("0.9.0".into());
+        assert_eq!(f.update_button().map(|b| (b.1, b.2)), Some(("Обновить", true)));
+        assert_eq!(click_update(&mut f), Cmd::Update);
+        f.update = UpdateView::Failed { msg: "нет сети".into(), retry: true };
+        assert_eq!(click_update(&mut f), Cmd::Update);
+        f.update = UpdateView::Failed { msg: "нет сети".into(), retry: false };
+        assert_eq!(click_update(&mut f), Cmd::CheckUpdates);
+        // пока идёт работа — кнопки нет, а место под ней ни во что не попадает
+        for busy in [UpdateView::Checking, UpdateView::Downloading(40), UpdateView::Installing] {
+            f.update = busy;
+            assert!(f.update_button().is_none());
+            let c = f.control(R_UPDATE, BTN_W);
+            assert_ne!(f.hit(f.s(W - PAD - BTN_W) + 5.0, c.cy()), Some(Target::Update));
+        }
     }
 
     #[test]
@@ -924,6 +1048,17 @@ mod tests {
             let (w, h) = f.size();
             let mut p = Painter::new(w as u32, h as u32).unwrap();
             f.draw(&mut p, &fonts, theme, true);
+            for st in [
+                UpdateView::Checking,
+                UpdateView::Available("0.9.0".into()),
+                UpdateView::Downloading(50),
+                UpdateView::Installing,
+                UpdateView::Failed { msg: "x".into(), retry: true },
+            ] {
+                let mut g = form();
+                g.update = st;
+                g.draw(&mut p, &fonts, theme, true);
+            }
             let bg = palette::ui(theme).bg;
             let px = &p.rgba()[(20 * w as usize + w as usize / 2) * 4..][..3];
             assert_eq!(px, [(bg >> 16) as u8, (bg >> 8) as u8, bg as u8], "{theme:?}");

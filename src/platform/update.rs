@@ -45,6 +45,10 @@ pub struct Release {
     pub page: String,
     /// Прямая ссылка на установщик (`RadialMenu-Setup-*.exe`), если он приложен.
     pub installer: Option<String>,
+    /// Имя файла установщика — по нему ищется контрольная сумма.
+    pub installer_name: Option<String>,
+    /// Прямая ссылка на `SHA256SUMS.txt` из того же релиза.
+    pub sums: Option<String>,
 }
 
 impl Release {
@@ -59,15 +63,42 @@ pub fn parse_release(json: &str) -> Option<Release> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let version = Version::parse(v.get("tag_name")?.as_str()?)?;
     let page = v.get("html_url")?.as_str()?.to_string();
-    let installer = v.get("assets").and_then(|a| a.as_array()).and_then(|assets| {
+    let assets = v.get("assets").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+    let find = |pick: &dyn Fn(&str) -> bool| -> Option<(String, String)> {
         assets.iter().find_map(|a| {
             let name = a.get("name")?.as_str()?;
-            (name.starts_with("RadialMenu-Setup-") && name.ends_with(".exe"))
-                .then(|| a.get("browser_download_url")?.as_str().map(str::to_string))
+            pick(name)
+                .then(|| Some((name.to_string(), a.get("browser_download_url")?.as_str()?.to_string())))
                 .flatten()
         })
-    });
-    Some(Release { version, page, installer })
+    };
+    let setup = find(&|n| n.starts_with("RadialMenu-Setup-") && n.ends_with(".exe"));
+    let sums = find(&|n| n == "SHA256SUMS.txt").map(|(_, url)| url);
+    let (installer_name, installer) = match setup {
+        Some((n, u)) => (Some(n), Some(u)),
+        None => (None, None),
+    };
+    Some(Release { version, page, installer, installer_name, sums })
+}
+
+/// Контрольная сумма файла `file` из `SHA256SUMS.txt` (строки `хэш  имя` или `хэш *имя`), строчными буквами.
+pub fn sum_for(sums: &str, file: &str) -> Option<String> {
+    sums.trim_start_matches('\u{feff}').lines().find_map(|line| {
+        let (hash, name) = line.trim().split_once(char::is_whitespace)?;
+        let name = name.trim().trim_start_matches('*');
+        (name == file && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| hash.to_ascii_lowercase())
+    })
+}
+
+/// Файлы для установки берём только из релизов нашего репозитория на github.com.
+pub fn is_trusted_asset(url: &str) -> bool {
+    url.starts_with(&format!("https://github.com/{REPO}/releases/download/"))
+}
+
+/// Хэш в виде строки из 64 шестнадцатеричных цифр.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Версия этой сборки.
@@ -132,6 +163,34 @@ mod tests {
         assert_eq!(parse_release("not json"), None);
         assert_eq!(parse_release(r#"{"message":"Not Found"}"#), None); // приватный репозиторий
         assert_eq!(parse_release(r#"{"tag_name":"nightly","html_url":"u"}"#), None);
+    }
+
+    #[test]
+    fn release_remembers_installer_name_and_sums() {
+        let r = parse_release(SAMPLE).unwrap();
+        assert_eq!(r.installer_name.as_deref(), Some("RadialMenu-Setup-0.8.0.exe"));
+        assert_eq!(r.sums.as_deref(), Some("https://x/sums"));
+    }
+
+    #[test]
+    fn sums_file_is_read() {
+        let text = format!(
+            "\u{feff}{}  RadialMenu-0.8.0-portable.zip\r\n{}  RadialMenu-Setup-0.8.0.exe\r\n",
+            "a".repeat(64),
+            "B".repeat(64)
+        );
+        assert_eq!(sum_for(&text, "RadialMenu-Setup-0.8.0.exe"), Some("b".repeat(64)));
+        assert_eq!(sum_for(&text, "other.exe"), None);
+        assert_eq!(sum_for("short  RadialMenu-Setup-0.8.0.exe", "RadialMenu-Setup-0.8.0.exe"), None);
+        assert_eq!(hex(&[0, 255, 16]), "00ff10");
+    }
+
+    #[test]
+    fn only_our_release_files_are_trusted() {
+        assert!(is_trusted_asset("https://github.com/203225014/RadialMenu/releases/download/v0.9.0/RadialMenu-Setup-0.9.0.exe"));
+        assert!(!is_trusted_asset("https://github.com/evil/RadialMenu/releases/download/v1/x.exe"));
+        assert!(!is_trusted_asset("http://github.com/203225014/RadialMenu/releases/download/v1/x.exe"));
+        assert!(!is_trusted_asset("https://github.com.evil.com/203225014/RadialMenu/releases/download/x"));
     }
 
     #[test]

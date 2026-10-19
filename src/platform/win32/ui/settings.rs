@@ -18,10 +18,10 @@ use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowTextLengthW,
     GetWindowTextW, IsWindow, LoadCursorW, PostMessageW, RegisterClassW, SendMessageW,
-    SetWindowTextW, ShowWindow, ES_AUTOHSCROLL, HTCAPTION, IDC_ARROW, SW_SHOW, WINDOW_EX_STYLE,
+    SetTimer, SetWindowTextW, ShowWindow, ES_AUTOHSCROLL, HTCAPTION, IDC_ARROW, SW_SHOW, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCLBUTTONDOWN,
-    WM_PAINT, WM_SETFONT, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_POPUP,
+    WM_PAINT, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_POPUP,
     WS_VISIBLE,
 };
 
@@ -35,6 +35,7 @@ use crate::platform::win32::system::util::{
     h, log_error, monitor_at, pcwstr, rgb, round_corners, ui_scale, wide,
 };
 use crate::platform::win32::system::{dialogs, files};
+use crate::platform::win32::updater::{self, Mode};
 use crate::render::painter::Painter;
 use crate::render::palette;
 use crate::ui::settings_form::{Cmd, Fonts, Key, SettingsForm, Status};
@@ -48,6 +49,7 @@ pub type OnPreview = fn(Option<ThemeMode>);
 const WM_SET_KEY: u32 = WM_APP + 30;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const EN_CHANGE: u32 = 0x0300;
+const TIMER_UPDATE: usize = 7;
 
 struct Win {
     hwnd: isize,
@@ -91,6 +93,8 @@ pub fn open(settings: &Settings, autostart: bool, status: Option<Status>, on_sav
     };
     let mut form = SettingsForm::new(settings.clone(), autostart, ui_scale());
     form.status = status;
+    form.version = crate::platform::update::current().to_string();
+    form.update = updater::view();
     unsafe {
         if let Err(e) = create(form, fonts, on_save, on_preview) {
             log_error(&format!("окно настроек: {e}"));
@@ -208,6 +212,8 @@ unsafe fn create(form: SettingsForm, fonts: Fonts, on_save: OnSave, on_preview: 
     });
     let _ = ShowWindow(hwnd, SW_SHOW);
     take_focus(hwnd, hwnd);
+    // ход проверки и скачивания приходит из другого потока — сверяемся с ним по таймеру
+    SetTimer(Some(hwnd), TIMER_UPDATE, 250, None);
     Ok(())
 }
 
@@ -265,6 +271,20 @@ unsafe fn edit_text(edit: HWND) -> String {
     let mut buf = vec![0u16; len + 1];
     let n = GetWindowTextW(edit, &mut buf).max(0) as usize;
     String::from_utf16_lossy(&buf[..n])
+}
+
+/// Показать в окне актуальное состояние обновления (перерисовать, если оно изменилось).
+fn sync_update(hwnd: HWND) {
+    let view = updater::view();
+    let changed = with(|w| w.form.update != view && {
+        w.form.update = view;
+        true
+    });
+    if changed == Some(true) {
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
 }
 
 /// Исполнить команду формы — уже вне `with`: тут бывают диалоги и синхронные сообщения.
@@ -330,6 +350,14 @@ unsafe fn run(hwnd: HWND, cmd: Cmd) {
             with(|w| w.form.status = Some(status));
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
+        Cmd::CheckUpdates => {
+            updater::check(Mode::Settings);
+            sync_update(hwnd);
+        }
+        Cmd::Update => {
+            updater::install();
+            sync_update(hwnd);
+        }
         Cmd::DragWindow => {
             let _ = ReleaseCapture();
             SendMessageW(hwnd, WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as usize)), Some(LPARAM(0)));
@@ -371,6 +399,10 @@ unsafe extern "system" fn win_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_TIMER if wparam.0 == TIMER_UPDATE => {
+            sync_update(hwnd);
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             let (x, y) = xy(lparam);
             let (cmd, track) = with(|w| {

@@ -21,6 +21,7 @@ fontdue = { version = "0.9", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
 serde_json = "1"
+sha2 = "0.10"
 resvg = { version = "0.45", default-features = false }
 
 [target.'cfg(windows)'.dependencies.windows]
@@ -72,3 +73,7 @@ opt-level = 3
 opt-level = 3
 [profile.release.package.radial_menu]
 opt-level = 3
+
+# fontdue с небольшой правкой: загружать только нужные диапазоны символов (экономит ~17 МБ на шрифт)
+[patch.crates-io]
+fontdue = { path = "vendor/fontdue" }

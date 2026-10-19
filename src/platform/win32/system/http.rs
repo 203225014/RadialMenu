@@ -1,14 +1,13 @@
 //! Простой HTTPS GET средствами Windows (WinHTTP): без сторонних клиентов и TLS-библиотек.
-//! Нужен для проверки обновлений; системные настройки прокси учитываются самой WinHTTP.
+//! Нужен для проверки и скачивания обновлений; системные настройки прокси учитываются самой WinHTTP.
 
 use std::ffi::c_void;
 
 use windows::core::PCWSTR;
 use windows::Win32::Networking::WinHttp::{
-    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable,
-    WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
+    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
     WinHttpSetTimeouts, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
-    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
+    WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
 };
 
 use super::util::{pcwstr, wide};
@@ -37,8 +36,14 @@ pub fn split_url(url: &str) -> Option<(&str, &str)> {
     }
 }
 
-/// GET по https; вернёт тело при коде 200, иначе описание ошибки.
-pub fn get(url: &str, user_agent: &str, timeout_ms: i32) -> Result<Vec<u8>, String> {
+/// Читать ответ кусками по 64 КБ: `sink(кусок, всего_байт)`, где `всего_байт` — Content-Length или 0.
+fn stream(
+    url: &str,
+    user_agent: &str,
+    accept: &str,
+    timeout_ms: i32,
+    mut sink: impl FnMut(&[u8], u64) -> Result<(), String>,
+) -> Result<(), String> {
     let (host, path) = split_url(url).ok_or("поддерживается только https")?;
     unsafe {
         let ua = wide(user_agent);
@@ -55,7 +60,7 @@ pub fn get(url: &str, user_agent: &str, timeout_ms: i32) -> Result<Vec<u8>, Stri
             return Err(format!("нет соединения с {host}"));
         }
         let (verb, p) = (wide("GET"), wide(path));
-        let accept = wide("application/vnd.github+json");
+        let accept = wide(accept);
         let accepts = [pcwstr(&accept), PCWSTR::null()];
         let req = Handle(WinHttpOpenRequest(
             conn.0,
@@ -69,42 +74,72 @@ pub fn get(url: &str, user_agent: &str, timeout_ms: i32) -> Result<Vec<u8>, Stri
         if req.0.is_null() {
             return Err("запрос не создан".into());
         }
+        // переадресации (GitHub отдаёт файлы релиза с другого узла) WinHTTP проходит сама
         WinHttpSendRequest(req.0, None, None, 0, 0, 0).map_err(|e| format!("запрос не отправлен: {e}"))?;
         WinHttpReceiveResponse(req.0, std::ptr::null_mut()).map_err(|e| format!("нет ответа: {e}"))?;
 
-        let mut status: u32 = 0;
-        let mut size = std::mem::size_of::<u32>() as u32;
-        WinHttpQueryHeaders(
-            req.0,
-            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            PCWSTR::null(),
-            Some(&mut status as *mut u32 as *mut c_void),
-            &mut size,
-            std::ptr::null_mut(),
-        )
-        .map_err(|e| format!("нет кода ответа: {e}"))?;
+        let number = |what: u32| -> Option<u32> {
+            let mut v: u32 = 0;
+            let mut size = std::mem::size_of::<u32>() as u32;
+            WinHttpQueryHeaders(
+                req.0,
+                what | WINHTTP_QUERY_FLAG_NUMBER,
+                PCWSTR::null(),
+                Some(&mut v as *mut u32 as *mut c_void),
+                &mut size,
+                std::ptr::null_mut(),
+            )
+            .ok()
+            .map(|_| v)
+        };
+        let status = number(WINHTTP_QUERY_STATUS_CODE).ok_or("нет кода ответа")?;
         if status != 200 {
             return Err(format!("сервер ответил {status}"));
         }
+        let total = number(WINHTTP_QUERY_CONTENT_LENGTH).unwrap_or(0) as u64;
 
-        let mut body = Vec::new();
+        let mut chunk = vec![0u8; 64 * 1024];
         loop {
-            let mut avail = 0u32;
-            WinHttpQueryDataAvailable(req.0, &mut avail).map_err(|e| format!("чтение: {e}"))?;
-            if avail == 0 {
-                break;
-            }
-            let mut chunk = vec![0u8; avail as usize];
             let mut read = 0u32;
-            WinHttpReadData(req.0, chunk.as_mut_ptr() as *mut c_void, avail, &mut read)
+            WinHttpReadData(req.0, chunk.as_mut_ptr() as *mut c_void, chunk.len() as u32, &mut read)
                 .map_err(|e| format!("чтение: {e}"))?;
-            body.extend_from_slice(&chunk[..read as usize]);
-            if body.len() > MAX_BODY {
-                return Err("ответ слишком большой".into());
+            if read == 0 {
+                return Ok(());
             }
+            sink(&chunk[..read as usize], total)?;
         }
-        Ok(body)
     }
+}
+
+/// GET по https; вернёт тело при коде 200, иначе описание ошибки.
+pub fn get(url: &str, user_agent: &str, timeout_ms: i32) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    stream(url, user_agent, "application/vnd.github+json", timeout_ms, |chunk, _| {
+        body.extend_from_slice(chunk);
+        if body.len() > MAX_BODY {
+            return Err("ответ слишком большой".into());
+        }
+        Ok(())
+    })?;
+    Ok(body)
+}
+
+/// Скачать файл кусками: `sink(кусок, всего_байт)`; больше `max` байт — ошибка.
+pub fn download(
+    url: &str,
+    user_agent: &str,
+    timeout_ms: i32,
+    max: u64,
+    mut sink: impl FnMut(&[u8], u64) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut got = 0u64;
+    stream(url, user_agent, "application/octet-stream", timeout_ms, |chunk, total| {
+        got += chunk.len() as u64;
+        if got > max || total > max {
+            return Err("файл слишком большой".into());
+        }
+        sink(chunk, total)
+    })
 }
 
 #[cfg(test)]
@@ -116,6 +151,28 @@ mod tests {
         assert_eq!(split_url("https://api.github.com/repos/a/b/releases/latest"), Some(("api.github.com", "/repos/a/b/releases/latest")));
         assert_eq!(split_url("https://example.com"), Some(("example.com", "/")));
         assert_eq!(split_url("http://example.com/x"), None);
+    }
+
+    /// Живое скачивание установщика релиза с проверкой суммы: `cargo test live_download -- --ignored`.
+    #[test]
+    #[ignore = "нужна сеть"]
+    fn live_download_matches_published_sum() {
+        use sha2::{Digest, Sha256};
+        let base = "https://github.com/203225014/RadialMenu/releases/download/v0.8.0/";
+        let sums = get(&format!("{base}SHA256SUMS.txt"), "RadialMenu-test", 15_000).unwrap();
+        let name = "RadialMenu-Setup-0.8.0.exe";
+        let want = crate::platform::update::sum_for(&String::from_utf8_lossy(&sums), name).expect("сумма в файле");
+        let (mut h, mut n, mut last_total) = (Sha256::new(), 0u64, 0u64);
+        download(&format!("{base}{name}"), "RadialMenu-test", 20_000, 100 << 20, |c, total| {
+            h.update(c);
+            n += c.len() as u64;
+            last_total = total;
+            Ok(())
+        })
+        .unwrap();
+        eprintln!("скачано {n} байт, Content-Length {last_total}");
+        assert!(n > 100_000 && (last_total == 0 || last_total == n));
+        assert_eq!(crate::platform::update::hex(&h.finalize()), want);
     }
 
     /// Живой запрос к публичному репозиторию: `cargo test live_github -- --ignored`.

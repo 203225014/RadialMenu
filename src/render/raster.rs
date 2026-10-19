@@ -375,15 +375,22 @@ fn dot(t: usize) -> Rgba {
 }
 
 fn stadium(w: f32, h: f32) -> Option<Path> {
+    rrect(w, h, h / 2.0)
+}
+
+/// Прямоугольник со скруглёнными углами радиуса `r` (не больше половины меньшей стороны).
+fn rrect(w: f32, h: f32, r: f32) -> Option<Path> {
     const K: f32 = 0.552_284_8;
-    let r = h / 2.0;
+    let r = r.min(w / 2.0).min(h / 2.0);
     let mut pb = PathBuilder::new();
     pb.move_to(r, 0.0);
     pb.line_to(w - r, 0.0);
     pb.cubic_to(w - r + K * r, 0.0, w, r - K * r, w, r);
-    pb.cubic_to(w, r + K * r, w - r + K * r, h, w - r, h);
+    pb.line_to(w, h - r);
+    pb.cubic_to(w, h - r + K * r, w - r + K * r, h, w - r, h);
     pb.line_to(r, h);
-    pb.cubic_to(r - K * r, h, 0.0, r + K * r, 0.0, r);
+    pb.cubic_to(r - K * r, h, 0.0, h - r + K * r, 0.0, h - r);
+    pb.line_to(0.0, r);
     pb.cubic_to(0.0, r - K * r, r - K * r, 0.0, r, 0.0);
     pb.close();
     pb.finish()
@@ -465,9 +472,107 @@ fn pill(font: &fontdue::Font, text: &str, px: f32, scale: f32, colors: &PillColo
     }
 }
 
-/// Плашка с названием трека: рисуется во время работы (текст заранее неизвестен).
-pub fn track_pill(font: &fontdue::Font, text: &str, theme: Theme, scale: f32) -> Rgba {
-    pill(font, text, 13.0 * scale, scale, &palette::pill(theme))
+/// Что сейчас играет.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Track {
+    pub title: String,
+    pub artist: String,
+    pub paused: bool,
+}
+
+/// Размеры карточки трека (при масштабе 1): ширина постоянная, чтобы карточка не «дышала» от названия.
+pub const CARD_W: f32 = 264.0;
+pub const CARD_H: f32 = 54.0;
+const CARD_ICON: f32 = 36.0;
+const CARD_PAD: f32 = 9.0;
+/// Поля справа и слева от текста: значок с отступами слева, отступ справа.
+pub const CARD_PAD_L: f32 = CARD_PAD + CARD_ICON + 12.0;
+pub const CARD_PAD_R: f32 = 16.0;
+
+/// Положить текст в пиксели (предумноженный RGBA): `cy` — середина строки по вертикали.
+#[allow(clippy::too_many_arguments)]
+fn blit_text(data: &mut [u8], w: usize, h: usize, font: &fontdue::Font, text: &str, px: f32, x: f32, cy: f32, color: u32) {
+    let lm = font.horizontal_line_metrics(px);
+    let (ascent, descent) = lm.map(|l| (l.ascent, l.descent)).unwrap_or((px * 0.95, -px * 0.25));
+    let baseline = cy - (ascent - descent) / 2.0 + ascent;
+    let src = [(color >> 16) & 255, (color >> 8) & 255, color & 255, 255];
+    let chars: Vec<char> = text.chars().collect();
+    let mut pen = x;
+    for (i, &ch) in chars.iter().enumerate() {
+        let (m, bmp) = font.rasterize(ch, px);
+        let left = (pen + m.xmin as f32).round() as i32;
+        let top = (baseline - (m.ymin + m.height as i32) as f32).round() as i32;
+        for row in 0..m.height {
+            for col in 0..m.width {
+                let cov = bmp[row * m.width + col] as u32;
+                let (gx, gy) = (left + col as i32, top + row as i32);
+                if cov == 0 || gx < 0 || gy < 0 || gx as usize >= w || gy as usize >= h {
+                    continue;
+                }
+                let o = (gy as usize * w + gx as usize) * 4;
+                for c in 0..4 {
+                    let d = data[o + c] as u32;
+                    data[o + c] = (src[c] * cov / 255 + d * (255 - cov) / 255).min(255) as u8;
+                }
+            }
+        }
+        pen += m.advance_width;
+        if let Some(&next) = chars.get(i + 1) {
+            pen += font.horizontal_kern(ch, next, px).unwrap_or(0.0);
+        }
+    }
+}
+
+/// Карточка «что играет»: значок в цвете акцента, название и исполнитель. Строки приходят уже
+/// подогнанными по ширине (`Engine::set_track`).
+pub fn track_card(font: &fontdue::Font, t: &Track, theme: Theme, scale: f32) -> Rgba {
+    let (w, h) = ((CARD_W * scale).round() as usize, (CARD_H * scale).round() as usize);
+    let (ui, pc) = (palette::ui(theme), palette::pill(theme));
+    let mut pm = Pixmap::new(w as u32, h as u32).expect("размер карточки");
+    let mut paint = Paint { anti_alias: true, ..Paint::default() };
+    let rgb = |c: u32| ((c >> 16) as u8, (c >> 8) as u8, c as u8);
+
+    if let Some(p) = rrect(w as f32, h as f32, 18.0 * scale) {
+        let [r, g, b, a] = pc.bg;
+        paint.set_color_rgba8(r, g, b, a);
+        pm.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
+    }
+    if let Some(p) = rrect(w as f32 - 1.0, h as f32 - 1.0, 18.0 * scale - 0.5)
+        .and_then(|p| p.transform(Transform::from_translate(0.5, 0.5)))
+    {
+        let [r, g, b, a] = pc.border;
+        paint.set_color_rgba8(r, g, b, a);
+        pm.stroke_path(&p, &paint, &Stroke { width: 1.0, ..Stroke::default() }, Transform::identity(), None);
+    }
+
+    // значок: плитка акцента, на ней — «эквалайзер» или «пауза»
+    let side = CARD_ICON * scale;
+    let (ix, iy) = (CARD_PAD * scale, (h as f32 - side) / 2.0);
+    if let Some(p) = rrect(side, side, 12.0 * scale).and_then(|p| p.transform(Transform::from_translate(ix, iy))) {
+        let (r, g, b) = rgb(ui.acc);
+        paint.set_color_rgba8(r, g, b, 255);
+        pm.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
+    }
+    let (r, g, b) = rgb(ui.on_acc);
+    paint.set_color_rgba8(r, g, b, 255);
+    let k = 16.0 * scale / 14.0; // рисунок задан в клетке 14×14
+    let (ox, oy) = (ix + (side - 16.0 * scale) / 2.0, iy + (side - 16.0 * scale) / 2.0);
+    let bars: &[(f32, f32, f32, f32)] = if t.paused {
+        &[(3.0, 2.0, 3.0, 10.0), (8.0, 2.0, 3.0, 10.0)]
+    } else {
+        &[(1.0, 5.0, 3.0, 8.0), (5.5, 1.0, 3.0, 12.0), (10.0, 7.0, 3.0, 6.0)]
+    };
+    for &(bx, by, bw, bh) in bars {
+        if let Some(p) = rrect(bw * k, bh * k, 1.5 * k).and_then(|p| p.transform(Transform::from_translate(ox + bx * k, oy + by * k))) {
+            pm.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
+        }
+    }
+
+    let tx = ix + side + 12.0 * scale;
+    let data = pm.data_mut();
+    blit_text(data, w, h, font, &t.title, 13.5 * scale, tx, h as f32 / 2.0 - 8.0 * scale, ui.fg);
+    blit_text(data, w, h, font, &t.artist, 12.0 * scale, tx, h as f32 / 2.0 + 9.0 * scale, ui.dim);
+    Rgba { w, h, data: pm.take() }
 }
 
 /// Системный шрифт для подписей (жирный Segoe UI → Arial; на других ОС — DejaVu для отладки).
@@ -506,8 +611,15 @@ fn find_font(env: &str, candidates: &[&str]) -> Option<fontdue::Font> {
     paths.extend(candidates.iter().map(|p| p.to_string()));
     paths.iter().find_map(|p| {
         let bytes = std::fs::read(p).ok()?;
-        fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
+        let settings = fontdue::FontSettings { keep: Some(wanted_char), load_substitutions: false, ..Default::default() };
+        fontdue::Font::from_bytes(bytes, settings).ok()
     })
+}
+
+/// Какие символы грузить из шрифта: латиница, греческий, кириллица и знаки. Весь Segoe UI — это
+/// десятки тысяч глифов и ~20 МБ памяти на шрифт; для подписей и заметок хватает этого.
+fn wanted_char(c: u32) -> bool {
+    matches!(c, 0x20..=0x24F | 0x370..=0x52F | 0x2000..=0x20CF | 0x2190..=0x23FF | 0x25A0..=0x26FF | 0xFFFD)
 }
 
 #[cfg(test)]
@@ -643,5 +755,21 @@ mod tests {
         // светлая: фон светлый, текст тёмный
         assert!(l.data.chunks_exact(4).any(|px| px[3] > 200 && px[0] < 80));
         assert!(l.data.chunks_exact(4).any(|px| px[3] > 200 && px[0] > 200));
+    }
+
+    #[test]
+    fn track_card_is_fixed_size_and_themed() {
+        let Some(font) = load_font() else { return };
+        let t = Track { title: "Portorose in July".into(), artist: "Gramatik".into(), paused: false };
+        let (d, l) = (track_card(&font, &t, Theme::Dark, 1.0), track_card(&font, &t, Theme::Light, 1.0));
+        assert_eq!((d.w, d.h), (264, 54));
+        assert_eq!((l.w, l.h), (264, 54));
+        assert_ne!(d.data, l.data);
+        // на паузе рисунок значка другой, размер тот же
+        let p = track_card(&font, &Track { paused: true, ..t.clone() }, Theme::Dark, 1.0);
+        assert_eq!((p.w, p.h), (264, 54));
+        assert_ne!(p.data, d.data);
+        let big = track_card(&font, &t, Theme::Dark, 1.5);
+        assert_eq!((big.w, big.h), (396, 81));
     }
 }

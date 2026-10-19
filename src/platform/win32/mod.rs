@@ -11,5 +11,6 @@ mod input;
 mod slot;
 mod system;
 mod ui;
+mod updater;
 
 pub use app::run;

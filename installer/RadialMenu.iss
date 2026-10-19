@@ -45,6 +45,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\RadialMenu.exe"; Description: "Запустить Радиальное меню"; Flags: nowait postinstall skipifsilent
+; обновление изнутри программы (тихая установка, /UPDATE=1): запустить заново и показать уведомление
+Filename: "{app}\RadialMenu.exe"; Parameters: "--updated"; Flags: nowait runasoriginaluser; Check: IsUpdate
 
 [UninstallRun]
 ; на случай, если автозапуск включили из программы, а не при установке
@@ -57,6 +59,12 @@ var
   Code: Integer;
 begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/im RadialMenu.exe /f', '', SW_HIDE, ewWaitUntilTerminated, Code);
+end;
+
+// Установщик запущен самой программой (кнопка «Обновить» в настройках).
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
 end;
 
 function InitializeSetup: Boolean;

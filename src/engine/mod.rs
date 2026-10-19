@@ -11,7 +11,7 @@ use crate::model::{Action, Context, IconRef, Menu, NodeId, Settings, Theme, ROOT
 use crate::render::compose::{Canvas, Rect, SectorShape};
 use crate::render::palette as style;
 use crate::render::painter::Painter;
-use crate::render::raster::{self, Bake, PillKind, ProgramIcons, Rgba, BOX, DIAM, DOT_BOX};
+use crate::render::raster::{self, Bake, PillKind, ProgramIcons, Rgba, Track, BOX, DIAM, DOT_BOX};
 use anim::{Anim, Scene};
 use geom::ease_back;
 use layout::Layout;
@@ -56,8 +56,8 @@ pub struct Engine {
     /// Шрифт для подписи, которая известна только во время работы (что сейчас играет).
     font: Option<fontdue::Font>,
     pill_scale: f32,
-    track: Option<String>,
-    track_pills: Vec<(Theme, Rgba)>,
+    track: Option<Track>,
+    track_cards: Vec<(Theme, Rgba)>,
     /// Прозрачность подписи трека 0..1 (плавно появляется, пока открыта кнопка плеера).
     track_a: f32,
 }
@@ -120,29 +120,35 @@ impl Engine {
             font: font.cloned(),
             pill_scale: ui_scale * settings_scale,
             track: None,
-            track_pills: Vec::new(),
+            track_cards: Vec::new(),
             track_a: 0.0,
         }
     }
 
-    /// Что сейчас играет («Название — Исполнитель»); `None` — ничего. Показывается под центром,
-    /// пока открыта кнопка с управлением медиа.
-    pub fn set_track(&mut self, track: Option<&str>) {
-        if track == self.track.as_deref() {
+    /// Что сейчас играет; `None` — ничего. Карточка показывается, пока открыта кнопка с управлением медиа.
+    pub fn set_track(&mut self, track: Option<&Track>) {
+        if track == self.track.as_ref() {
             return;
         }
-        self.track = track.map(str::to_string);
-        self.track_pills.clear();
-        let (Some(font), Some(text)) = (&self.font, &self.track) else {
+        self.track = track.cloned();
+        self.track_cards.clear();
+        let (Some(font), Some(t)) = (&self.font, &self.track) else {
             return;
         };
-        let m = &self.metrics;
-        let max_w = 1.85 * (m.ring(0) - m.h);
-        let text = fit_text(font, text, 13.0 * self.pill_scale, max_w - 18.0 * self.pill_scale);
-        self.track_pills = Theme::ALL
-            .iter()
-            .map(|&t| (t, raster::track_pill(font, &text, t, self.pill_scale)))
-            .collect();
+        let s = self.pill_scale;
+        let max_w = (raster::CARD_W - raster::CARD_PAD_L - raster::CARD_PAD_R) * s;
+        let fit = Track {
+            title: fit_text(font, &t.title, 13.5 * s, max_w),
+            artist: fit_text(font, &t.artist, 12.0 * s, max_w),
+            paused: t.paused,
+        };
+        self.track_cards = Theme::ALL.iter().map(|&th| (th, raster::track_card(font, &fit, th, s))).collect();
+    }
+
+    /// Угол кнопки плеера на основном кольце (градусы, ось y вниз).
+    fn media_theta(&self) -> Option<f32> {
+        let id = self.menu.top().iter().copied().find(|&i| self.menu.is_media_group(i))?;
+        Some(self.layout.slot(id).arc.theta)
     }
 
     pub fn menu(&self) -> &Menu {
@@ -248,7 +254,7 @@ impl Engine {
             .hot
             .or(self.nav.open)
             .is_some_and(|id| self.menu.is_media_group(id) || self.menu.node(id).parent.is_some_and(|p| p != ROOT && self.menu.is_media_group(p)));
-        let want = if self.active && media_open && !self.track_pills.is_empty() { 1.0 } else { 0.0 };
+        let want = if self.active && media_open && !self.track_cards.is_empty() { 1.0 } else { 0.0 };
         self.track_a += (want - self.track_a) * (dt as f32 / 0.12).min(1.0);
         let g = if self.active {
             ((now - self.show_t) / FADE_IN).min(1.0)
@@ -380,12 +386,14 @@ impl Engine {
                 }
             }
         }
-        // что сейчас играет — под центром (ниже подписи громкости, если она на экране)
+        // что сейчас играет — карточка снаружи основного кольца, на стороне, противоположной кнопке плеера:
+        // веер раскрыт у самой кнопки, поэтому здесь он карточке не мешает и она стоит на месте
         if self.track_a > 0.02 {
-            if let Some((_, pill)) = self.track_pills.iter().find(|(t, _)| *t == self.theme) {
-                let toast_h = if self.toast.is_some_and(|(_, until)| until > now) { 30.0 * s } else { 0.0 };
-                let y = c.1 + m.hub_r + 14.0 * s + toast_h;
-                dirty = dirty.union(put_pill(cv, pill, c.0 - pill.w as f32 / 2.0, y, self.track_a.min(1.0)));
+            if let Some((_, card)) = self.track_cards.iter().find(|(t, _)| *t == self.theme) {
+                let up = self.media_theta().is_some_and(|t| t.to_radians().sin() > 0.0);
+                let edge = m.ring(0) + m.h + 14.0 * s;
+                let y = if up { c.1 - edge - card.h as f32 } else { c.1 + edge };
+                dirty = dirty.union(put_pill(cv, card, c.0 - card.w as f32 / 2.0, y, self.track_a.min(1.0)));
             }
         }
         dirty
@@ -584,17 +592,16 @@ mod tests {
     }
 
     #[test]
-    fn track_is_shown_only_while_the_media_button_is_open() {
+    fn track_card_stays_put_and_is_shown_only_while_the_media_button_is_open() {
         let Some(font) = raster::load_font() else { return };
         let menu = default_menu();
         let media = menu.ids().find(|&i| menu.node(i).state == Some(crate::model::Flag::Media)).expect("кнопка «Звук»");
         let dir = {
-            let mut e = Engine::new(Settings::default(), 1.0, (1920, 1080), menu.clone(), Some(&font), Theme::Dark, &raster::no_program_icons);
-            let (x, y) = e.layout.slot(media).off;
-            e.set_track(Some("Песня — Группа"));
-            (x, y)
+            let e = Engine::new(Settings::default(), 1.0, (1920, 1080), menu.clone(), Some(&font), Theme::Dark, &raster::no_program_icons);
+            e.layout.slot(media).off
         };
-        let shot = |track: Option<&str>, toward: (f32, f32)| {
+        let track = Track { title: "Песня".into(), artist: "Группа".into(), paused: false };
+        let shot = |track: Option<&Track>, toward: (f32, f32)| {
             let mut e = Engine::new(Settings::default(), 1.0, (1920, 1080), menu.clone(), Some(&font), Theme::Dark, &raster::no_program_icons);
             e.set_track(track);
             let n = e.window_size() as usize;
@@ -603,18 +610,23 @@ mod tests {
             e.press(0.0);
             let len = toward.0.hypot(toward.1).max(1.0);
             run(&mut e, &mut cv, 0.0, 0.8, (toward.0 / len * 6.0, toward.1 / len * 6.0));
-            // область под центром, где стоит подпись
-            let (cx, cy) = (n / 2, n / 2);
+            // карточка — снаружи основного кольца, со стороны, противоположной кнопке плеера
             let m = e.metrics;
-            let (y0, y1) = ((cy as f32 + m.hub_r + 14.0) as usize, (cy as f32 + m.hub_r + 38.0) as usize);
-            (y0..y1).flat_map(|y| (cx - 40..cx + 40).map(move |x| (x, y))).filter(|&(x, y)| buf[(y * n + x) * 4 + 3] > 120).count()
+            let (cx, cy) = (n as f32 / 2.0, n as f32 / 2.0);
+            let up = e.media_theta().is_some_and(|t| t.to_radians().sin() > 0.0);
+            let edge = m.ring(0) + m.h + 14.0;
+            let (y0, y1) = if up { (cy - edge - 54.0, cy - edge) } else { (cy + edge, cy + edge + 54.0) };
+            (y0 as usize..y1 as usize)
+                .flat_map(|y| (cx as usize - 100..cx as usize + 100).map(move |x| (x, y)))
+                .filter(|&(x, y)| buf[(y * n + x) * 4 + 3] > 120)
+                .count()
         };
-        let with = shot(Some("Песня — Группа"), dir);
+        let with = shot(Some(&track), dir);
         let without = shot(None, dir);
-        let elsewhere = shot(Some("Песня — Группа"), (0.0, -1.0)); // тянемся к «Открыть»
+        let elsewhere = shot(Some(&track), (0.0, -1.0)); // тянемся к «Открыть»
         assert!(with > 200, "подпись трека нарисована: {with}");
         assert_eq!(without, 0, "нечего играть — подписи нет");
-        assert_eq!(elsewhere, 0, "у другой кнопки подписи трека нет");
+        assert_eq!(elsewhere, shot(None, (0.0, -1.0)), "у другой кнопки карточки трека нет");
     }
 
     #[test]

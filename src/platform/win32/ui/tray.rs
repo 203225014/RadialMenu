@@ -48,8 +48,8 @@ pub enum Cmd {
     TogglePause,
     ToggleAutostart,
     OpenLog,
-    /// Скачать найденное обновление.
-    Download,
+    /// Открыть настройки, где можно обновить программу.
+    Update,
     ToggleUpdates,
     CheckNow,
     Exit,
@@ -163,7 +163,7 @@ pub fn menu(hwnd: HWND, paused: bool, update: Option<&str>, check_updates: bool)
         let auto = wide("Запускать с Windows");
         let log = wide("Открыть журнал");
         let exit = wide("Выход");
-        let upd = update.map(|v| wide(&format!("Доступна версия {v} — скачать")));
+        let upd = update.map(|v| wide(&format!("Доступна версия {v} — обновить…")));
         if let Some(u) = &upd {
             let _ = AppendMenuW(m, MF_STRING, 8, pcwstr(u));
             let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
@@ -207,7 +207,7 @@ pub fn menu(hwnd: HWND, paused: bool, update: Option<&str>, check_updates: bool)
             5 => Some(Cmd::OpenLog),
             6 => Some(Cmd::ToggleUpdates),
             7 => Some(Cmd::CheckNow),
-            8 => Some(Cmd::Download),
+            8 => Some(Cmd::Update),
             _ => None,
         }
     }

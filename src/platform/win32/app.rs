@@ -20,7 +20,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, KillTimer, MessageBoxW,
-    MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW, WM_APP, MB_ICONERROR, MB_OK, MB_TOPMOST, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetTimer,
+    MsgWaitForMultipleObjectsEx, PeekMessageW, MB_ICONERROR, MB_OK, MB_TOPMOST, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetTimer,
     TranslateMessage, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_QUIT, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER,
     WNDCLASSW,
@@ -29,10 +29,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::input::hook::{self, WM_RM_DOWN, WM_RM_UP, WM_RM_WHEEL};
 use super::input::send;
 use super::slot::Slot;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use super::system::audio::AudioMeter;
-use super::system::{autostart, files, http, media, programs, util};
+use super::system::{autostart, files, media, programs, util};
+use super::updater::{self, Mode, Notice, WM_UPDATE, WM_UPDATE_EXIT};
 use crate::platform::diag;
 use super::ui::layer::Layer;
 use super::ui::tray::{self, Cmd, WM_TRAY};
@@ -41,21 +40,12 @@ use crate::engine::Engine;
 use crate::model::menu_yaml::MenuError;
 use crate::model::{Action, Context, Flag, MenuSet, Settings, Step, Theme, ThemeMode};
 use crate::platform::theme::Follower;
-use crate::platform::update::{self, Release, Version};
+use crate::platform::update;
 use crate::render::compose::Canvas;
 use crate::render::raster;
 use crate::ui::settings_form::Status;
 
-/// Поток проверки обновлений сообщает результат окну (сам результат лежит в `UPDATE_RESULT`).
-const WM_UPDATE: u32 = WM_APP + 40;
 const NIN_BALLOONUSERCLICK: u32 = 0x0405;
-const UPDATE_FIRST_DELAY_S: u64 = 20;
-const UPDATE_EVERY_S: u64 = 24 * 60 * 60;
-
-/// Ответ проверки: (ручная ли, что нашли).
-type UpdateAnswer = (bool, Result<Release, String>);
-static UPDATE_RESULT: Mutex<Option<UpdateAnswer>> = Mutex::new(None);
-static UPDATES_ENABLED: AtomicBool = AtomicBool::new(true);
 
 const TIMER_ACTION: usize = 1;
 const TIMER_STEPS: usize = 2;
@@ -84,10 +74,6 @@ struct App {
     steps: std::collections::VecDeque<Step>,
     paused: bool,
     layer_moved: bool,
-    /// Найденная версия новее текущей.
-    update: Option<Release>,
-    /// О какой версии уже сказали уведомлением (не повторять каждые сутки).
-    update_told: Option<Version>,
 }
 
 impl App {
@@ -201,6 +187,7 @@ fn apply_settings(app: &mut App, new: Settings) {
     let relayout = app.settings.affects_layout(&new);
     hook::set_button(new.button);
     hook::set_hotkey(new.hotkey);
+    updater::set_enabled(new.check_updates);
     app.settings = new;
     apply_theme(app);
     if relayout {
@@ -333,7 +320,7 @@ fn tick() {
         let playing = app.engines[app.active].menu().uses(Flag::Media) && app.audio.playing(now, false);
         let ctx = Context::default().with(Flag::Media, playing);
         let track = if app.engines[app.active].menu().uses(Flag::Media) { media::current() } else { None };
-        app.engines[app.active].set_track(track.as_deref());
+        app.engines[app.active].set_track(track.as_ref());
         let n = app.layer.size() as usize;
         let frame = {
             let engine = &mut app.engines[app.active];
@@ -503,19 +490,17 @@ unsafe extern "system" fn main_proc(
         }
         WM_TRAY => match (lparam.0 & 0xFFFF) as u32 {
             WM_LBUTTONDBLCLK => open_settings(),
-            NIN_BALLOONUSERCLICK => open_update(), // щёлкнули по уведомлению «вышла новая версия»
+            // щёлкнули по уведомлению «вышла новая версия» — открыть настройки, где кнопка «Обновить»
+            NIN_BALLOONUSERCLICK if updater::available().is_some() => open_settings(),
             WM_RBUTTONUP => {
-                let (paused, upd, on) = with_app(|a| {
-                    (a.paused, a.update.as_ref().map(|r| r.version.to_string()), a.settings.check_updates)
-                })
-                .unwrap_or((false, None, true));
-                match tray::menu(hwnd, paused, upd.as_deref(), on) {
+                let (paused, on) = with_app(|a| (a.paused, a.settings.check_updates)).unwrap_or((false, true));
+                match tray::menu(hwnd, paused, updater::available().as_deref(), on) {
                     Some(Cmd::Settings) => open_settings(),
                     Some(Cmd::TogglePause) => toggle_pause(hwnd),
                     Some(Cmd::ToggleAutostart) => autostart::set(!autostart::enabled()),
-                    Some(Cmd::Download) => open_update(),
+                    Some(Cmd::Update) => open_settings(),
                     Some(Cmd::ToggleUpdates) => toggle_updates(),
-                    Some(Cmd::CheckNow) => spawn_check(hwnd.0 as isize, true),
+                    Some(Cmd::CheckNow) => updater::check(Mode::Tray),
                     Some(Cmd::OpenLog) => {
                         diag::log("журнал открыт из трея"); // чтобы файл точно существовал
                         send::open(&diag::log_path().to_string_lossy());
@@ -530,6 +515,11 @@ unsafe extern "system" fn main_proc(
             _ => {}
         },
         WM_UPDATE => on_update_answer(hwnd),
+        WM_UPDATE_EXIT => {
+            // установщик запущен: освободить exe и значок
+            tray::remove(hwnd);
+            PostQuitMessage(0);
+        }
         WM_DESTROY => PostQuitMessage(0),
         m if m != 0 && m == TASKBAR_CREATED.with(|t| t.get()) => {
             // Проводник перезапустился — вернуть значок
@@ -605,8 +595,6 @@ fn setup() -> Result<HWND, String> {
                 steps: Default::default(),
                 paused: false,
                 layer_moved: true,
-                update: None,
-                update_told: None,
             })
         });
         tray::add(hwnd, TIP);
@@ -614,87 +602,40 @@ fn setup() -> Result<HWND, String> {
             warn_menu(hwnd.0 as isize, false, e);
         }
         hook::spawn(button, hotkey, hwnd);
-        UPDATES_ENABLED.store(with_app(|a| a.settings.check_updates).unwrap_or(true), Ordering::Relaxed);
-        spawn_update_loop(hwnd.0 as isize);
+        updater::start(hwnd.0 as isize, with_app(|a| a.settings.check_updates).unwrap_or(true));
+        if std::env::args().any(|a| a == "--updated") {
+            // установщик перезапустил нас после обновления
+            tray::inform(
+                hwnd,
+                TIP,
+                "Приложение обновлено",
+                &format!("Установлена версия {}.", update::current()),
+            );
+            diag::log(&format!("обновлено до {}", update::current()));
+        }
         Ok(hwnd)
     }
 }
 
 // ---------------------------------------------------------------- обновления
 
-/// Спросить GitHub о последней версии (в отдельном потоке) и сообщить окну.
-fn spawn_check(hwnd: isize, manual: bool) {
-    std::thread::spawn(move || {
-        let ua = format!("RadialMenu/{}", env!("CARGO_PKG_VERSION"));
-        let answer = http::get(&update::latest_url(), &ua, 10_000)
-            .and_then(|body| {
-                update::parse_release(&String::from_utf8_lossy(&body)).ok_or_else(|| "непонятный ответ сервера".to_string())
-            });
-        if let Ok(mut slot) = UPDATE_RESULT.lock() {
-            *slot = Some((manual, answer));
-        }
-        unsafe {
-            let _ = PostMessageW(Some(util::h(hwnd)), WM_UPDATE, WPARAM(0), LPARAM(0));
-        }
-    });
-}
-
-/// Раз в сутки (первый раз вскоре после запуска), пока проверка не выключена.
-fn spawn_update_loop(hwnd: isize) {
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(UPDATE_FIRST_DELAY_S));
-        loop {
-            if UPDATES_ENABLED.load(Ordering::Relaxed) {
-                spawn_check(hwnd, false);
-            }
-            std::thread::sleep(std::time::Duration::from_secs(UPDATE_EVERY_S));
-        }
-    });
-}
-
 fn on_update_answer(hwnd: HWND) {
-    let Some((manual, answer)) = UPDATE_RESULT.lock().ok().and_then(|mut s| s.take()) else {
-        return;
-    };
     let paused = with_app(|a| a.paused).unwrap_or(false);
     let tip = tip(paused);
-    match answer {
-        Ok(rel) if update::is_newer(rel.version, update::current()) => {
-            diag::log(&format!("доступна версия {} (сейчас {})", rel.version, update::current()));
-            let tell = with_app(|a| {
-                let tell = manual || a.update_told != Some(rel.version);
-                a.update_told = Some(rel.version);
-                a.update = Some(rel.clone());
-                tell
-            })
-            .unwrap_or(false);
-            if tell {
-                tray::inform(
-                    hwnd,
-                    &tip,
-                    &format!("Доступна версия {}", rel.version),
-                    "Щёлкните по уведомлению или выберите пункт в меню значка, чтобы скачать установщик.",
-                );
-            }
+    match updater::take_answer() {
+        Notice::None => {}
+        Notice::Found(v) => tray::inform(
+            hwnd,
+            &tip,
+            &format!("Доступна версия {v}"),
+            "Щёлкните, чтобы открыть настройки и обновить программу.",
+        ),
+        Notice::UpToDate => {
+            tray::inform(hwnd, &tip, "Обновлений нет", &format!("Установлена последняя версия {}.", update::current()))
         }
-        Ok(_) => {
-            with_app(|a| a.update = None);
-            if manual {
-                tray::inform(hwnd, &tip, "Обновлений нет", &format!("Установлена последняя версия {}.", update::current()));
-            }
+        Notice::Failed(e) => {
+            tray::notify(hwnd, &tip, "Не удалось проверить обновления", &format!("{e}\nПроверьте подключение к интернету."))
         }
-        Err(e) => {
-            diag::log(&format!("проверка обновлений: {e}"));
-            if manual {
-                tray::notify(hwnd, &tip, "Не удалось проверить обновления", &format!("{e}\nПроверьте подключение к интернету."));
-            }
-        }
-    }
-}
-
-fn open_update() {
-    if let Some(url) = with_app(|a| a.update.as_ref().map(|r| r.download_url().to_string())).flatten() {
-        send::open(&url);
     }
 }
 
@@ -709,7 +650,7 @@ fn toggle_updates() {
         a.settings.check_updates
     });
     if let Some(on) = on {
-        UPDATES_ENABLED.store(on, Ordering::Relaxed);
+        updater::set_enabled(on);
     }
 }
 
