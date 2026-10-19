@@ -23,6 +23,8 @@ pub struct Settings {
     pub dwell_ms: u32,
     /// Тема: как в системе, светлая или тёмная.
     pub theme: ThemeMode,
+    /// Раз в сутки спрашивать у GitHub, не вышла ли новая версия.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -35,6 +37,7 @@ impl Default for Settings {
             size_percent: 100,
             dwell_ms: 450,
             theme: ThemeMode::Auto,
+            check_updates: true,
         }
     }
 }
@@ -59,6 +62,13 @@ impl Settings {
                 "size_percent" => s.size_percent = v.parse().unwrap_or(s.size_percent),
                 "dwell_ms" => s.dwell_ms = v.parse().unwrap_or(s.dwell_ms),
                 "theme" => s.theme = ThemeMode::from_key(v).unwrap_or(s.theme),
+                "check_updates" => {
+                    s.check_updates = match v.to_ascii_lowercase().as_str() {
+                        "0" | "false" | "no" | "off" => false,
+                        "1" | "true" | "yes" | "on" => true,
+                        _ => s.check_updates,
+                    }
+                }
                 _ => {}
             }
         }
@@ -113,7 +123,8 @@ impl Settings {
              # чувствительность, % ({}..{})\nsens_percent = {}\n\
              # размер меню, % ({}..{})\nsize_percent = {}\n\
              # задержка раскрытия подменю, мс ({}..{})\ndwell_ms = {}\n\
-             # тема: auto (как в системе), light, dark\ntheme = {}\n",
+             # тема: auto (как в системе), light, dark\ntheme = {}\n\
+             # проверять обновления раз в сутки (1/0); запрос идёт только на github.com\ncheck_updates = {}\n",
             self.button,
             self.hotkey.map(|c| c.to_text()).unwrap_or_default(),
             self.vault,
@@ -127,6 +138,7 @@ impl Settings {
             DWELL_RANGE.1,
             self.dwell_ms,
             self.theme.key(),
+            u8::from(self.check_updates),
         )
     }
 }
@@ -187,5 +199,18 @@ mod tests {
         assert_eq!((s.button, s.hotkey.unwrap().to_text().as_str()), (0, "alt+q"));
         let s = Settings::parse("hotkey = ctrl+alt\n");
         assert_eq!(s.hotkey, None, "одни модификаторы — не сочетание");
+    }
+
+    #[test]
+    fn update_check_flag_round_trips() {
+        assert!(Settings::parse("").check_updates); // по умолчанию включена
+        assert!(!Settings::parse("check_updates = 0
+").check_updates);
+        assert!(!Settings::parse("check_updates = off
+").check_updates);
+        assert!(Settings::parse("check_updates = maybe
+").check_updates);
+        let off = Settings { check_updates: false, ..Settings::default() };
+        assert!(!Settings::parse(&off.to_text()).check_updates);
     }
 }

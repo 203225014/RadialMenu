@@ -4,5 +4,6 @@ pub mod audio;
 pub mod autostart;
 pub mod dialogs;
 pub mod files;
+pub mod http;
 pub mod programs;
 pub mod util;

@@ -3,6 +3,7 @@
 
 pub mod diag;
 pub mod theme;
+pub mod update;
 
 #[cfg(windows)]
 pub mod win32;

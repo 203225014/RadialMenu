@@ -3,8 +3,8 @@
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_WARNING, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING, NIM_ADD, NIM_DELETE,
+    NIM_MODIFY, NOTIFYICONDATAW, NOTIFY_ICON_INFOTIP_FLAGS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, DestroyMenu, GetCursorPos,
@@ -48,6 +48,10 @@ pub enum Cmd {
     TogglePause,
     ToggleAutostart,
     OpenLog,
+    /// Скачать найденное обновление.
+    Download,
+    ToggleUpdates,
+    CheckNow,
     Exit,
 }
 
@@ -118,9 +122,18 @@ pub fn set_tip(hwnd: HWND, tip: &str) {
 
 /// Всплывающее уведомление у значка (например, об ошибке в menu.yaml).
 pub fn notify(hwnd: HWND, tip: &str, title: &str, text: &str) {
+    balloon(hwnd, tip, title, text, NIIF_WARNING);
+}
+
+/// Обычное (не тревожное) уведомление: «вышла новая версия», «обновлений нет».
+pub fn inform(hwnd: HWND, tip: &str, title: &str, text: &str) {
+    balloon(hwnd, tip, title, text, NIIF_INFO);
+}
+
+fn balloon(hwnd: HWND, tip: &str, title: &str, text: &str, kind: NOTIFY_ICON_INFOTIP_FLAGS) {
     let mut nid = data(hwnd, tip);
     nid.uFlags |= NIF_INFO;
-    nid.dwInfoFlags = NIIF_WARNING;
+    nid.dwInfoFlags = kind;
     copy(&mut nid.szInfoTitle, title);
     copy(&mut nid.szInfo, text);
     unsafe {
@@ -141,7 +154,8 @@ pub fn remove(hwnd: HWND) {
 }
 
 /// Контекстное меню значка; возвращает выбранную команду.
-pub fn menu(hwnd: HWND, paused: bool) -> Option<Cmd> {
+/// `update` — версия, которую можно скачать (пункт появляется первым); `check_updates` — галка проверки.
+pub fn menu(hwnd: HWND, paused: bool, update: Option<&str>, check_updates: bool) -> Option<Cmd> {
     unsafe {
         let m = CreatePopupMenu().ok()?;
         let settings = wide("Настройки…");
@@ -149,8 +163,13 @@ pub fn menu(hwnd: HWND, paused: bool) -> Option<Cmd> {
         let auto = wide("Запускать с Windows");
         let log = wide("Открыть журнал");
         let exit = wide("Выход");
+        let upd = update.map(|v| wide(&format!("Доступна версия {v} — скачать")));
+        if let Some(u) = &upd {
+            let _ = AppendMenuW(m, MF_STRING, 8, pcwstr(u));
+            let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
+        }
         let _ = AppendMenuW(m, MF_STRING, 1, pcwstr(&settings));
-        let _ = SetMenuDefaultItem(m, 1, 0); // жирным: то же, что двойной щелчок по значку
+        let _ = SetMenuDefaultItem(m, if upd.is_some() { 8 } else { 1 }, 0); // жирным: то же, что двойной щелчок по значку
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(m, MF_STRING, 2, pcwstr(&pause));
         let checked = if autostart::enabled() {
@@ -159,6 +178,10 @@ pub fn menu(hwnd: HWND, paused: bool) -> Option<Cmd> {
             MF_STRING
         };
         let _ = AppendMenuW(m, checked, 3, pcwstr(&auto));
+        let upd_on = wide("Проверять обновления");
+        let upd_now = wide("Проверить обновления сейчас");
+        let _ = AppendMenuW(m, if check_updates { MF_STRING | MF_CHECKED } else { MF_STRING }, 6, pcwstr(&upd_on));
+        let _ = AppendMenuW(m, MF_STRING, 7, pcwstr(&upd_now));
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(m, MF_STRING, 5, pcwstr(&log));
         let _ = AppendMenuW(m, MF_STRING, 4, pcwstr(&exit));
@@ -182,6 +205,9 @@ pub fn menu(hwnd: HWND, paused: bool) -> Option<Cmd> {
             3 => Some(Cmd::ToggleAutostart),
             4 => Some(Cmd::Exit),
             5 => Some(Cmd::OpenLog),
+            6 => Some(Cmd::ToggleUpdates),
+            7 => Some(Cmd::CheckNow),
+            8 => Some(Cmd::Download),
             _ => None,
         }
     }
