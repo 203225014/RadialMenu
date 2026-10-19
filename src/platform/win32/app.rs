@@ -30,7 +30,7 @@ use super::input::hook::{self, WM_RM_DOWN, WM_RM_UP, WM_RM_WHEEL};
 use super::input::send;
 use super::slot::Slot;
 use super::system::audio::AudioMeter;
-use super::system::{autostart, files, media, programs, util};
+use super::system::{autostart, desktops, files, media, programs, util};
 use super::updater::{self, Mode, Notice, WM_UPDATE, WM_UPDATE_EXIT};
 use crate::platform::diag;
 use super::ui::layer::Layer;
@@ -85,6 +85,8 @@ struct App {
     layer_moved: bool,
     /// Меню убрано с экрана до действия-снимка: пока оно не закроется совсем, не показывать его снова.
     capture_hide: bool,
+    /// Есть ли рабочий стол слева / справа от текущего (узнаётся при открытии меню).
+    desktops: (bool, bool),
     /// Размытый снимок экрана под меню, пока оно открыто.
     backdrop: Option<Vec<u8>>,
 }
@@ -357,7 +359,10 @@ fn tick() {
         let (dx, dy) = hook::take_motion();
         // опрос звука — только если в этом меню есть кнопки, которым он нужен
         let playing = app.engines[app.active].menu().uses(Flag::Media) && app.audio.playing(now, false);
-        let ctx = Context::default().with(Flag::Media, playing);
+        let ctx = Context::default()
+            .with(Flag::Media, playing)
+            .with(Flag::DesktopPrev, app.desktops.0)
+            .with(Flag::DesktopNext, app.desktops.1);
         let track = if app.engines[app.active].menu().uses(Flag::Media) { media::current() } else { None };
         app.engines[app.active].set_track(track.as_ref());
         let n = app.layer.size() as usize;
@@ -408,6 +413,10 @@ fn on_down(profile: usize) {
         app.backdrop = app.layer.backdrop(BLUR_RADIUS); // до показа окна: иначе снимется само меню
         hook::discard_motion(); // сдвиги до показа не в счёт
         app.engine().press(now);
+        let menu = app.engines[app.active].menu();
+        if menu.uses(Flag::DesktopPrev) || menu.uses(Flag::DesktopNext) {
+            app.desktops = desktops::neighbours();
+        }
         if app.engines[app.active].menu().uses(Flag::Media) {
             app.audio.playing(now, true); // сразу узнать, играет ли звук
             media::set_wanted(true); // и что именно играет
@@ -659,6 +668,7 @@ fn setup() -> Result<HWND, String> {
                 paused: false,
                 layer_moved: true,
                 capture_hide: false,
+                desktops: (true, true),
                 backdrop: None,
             })
         });

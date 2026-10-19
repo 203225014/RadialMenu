@@ -3,7 +3,7 @@
 use super::geom::{ang_diff, polar};
 use super::layout::Layout;
 use super::metrics::{Metrics, HYST};
-use crate::model::{Menu, NodeId, ROOT};
+use crate::model::{Context, Menu, NodeId, ROOT};
 
 #[derive(Debug, Default)]
 pub struct Nav {
@@ -24,7 +24,7 @@ impl Nav {
     }
 
     /// Сдвинуть указатель на `delta` (сырые единицы мыши) и пересчитать выбор.
-    pub fn update(&mut self, menu: &Menu, lay: &Layout, m: &Metrics, delta: (f32, f32), now: f64) {
+    pub fn update(&mut self, menu: &Menu, ctx: &Context, lay: &Layout, m: &Metrics, delta: (f32, f32), now: f64) {
         self.px += delta.0 * m.sens;
         self.py += delta.1 * m.sens;
         let (mut r, phi) = polar(self.px, self.py);
@@ -67,6 +67,11 @@ impl Nav {
                 hot = Some(k);
                 cur = k;
             }
+        }
+
+        // недоступная кнопка не выбирается (её веер, если он раскрыт, остаётся как есть)
+        if hot.is_some_and(|h| menu.is_disabled(h, ctx)) {
+            hot = None;
         }
 
         if r < m.dead && self.open.is_none() {
@@ -126,8 +131,27 @@ mod tests {
                 (x - self.nav.px) / self.m.sens,
                 (y - self.nav.py) / self.m.sens,
             );
-            self.nav.update(&self.menu, &self.lay, &self.m, d, now);
+            self.nav.update(&self.menu, &Context::default(), &self.lay, &self.m, d, now);
         }
+    }
+
+    #[test]
+    fn disabled_button_is_not_selected() {
+        use crate::model::{Flag, Item};
+        let menu = Menu::from_items(vec![
+            Item::new("copy", "A").action(crate::model::Action::Note).enabled_if(Flag::DesktopPrev),
+            Item::new("copy", "B").action(crate::model::Action::Note),
+        ]);
+        let m = Metrics::new(&Settings::default(), 1.0, (1920, 1080), &menu);
+        let lay = Layout::new(&menu, &m);
+        let mut nav = Nav::default();
+        // тянемся к первой кнопке (сверху, угол -90°): она выключена — выбора нет
+        let off = Context::default();
+        nav.update(&menu, &off, &lay, &m, (0.0, -10_000.0), 0.0);
+        assert_eq!(nav.hot, None);
+        let mut nav = Nav::default();
+        nav.update(&menu, &off.with(Flag::DesktopPrev, true), &lay, &m, (0.0, -10_000.0), 0.0);
+        assert!(nav.hot.is_some());
     }
 
     #[test]
@@ -197,7 +221,7 @@ mod tests {
     #[test]
     fn pointer_is_clamped() {
         let mut r = rig();
-        r.nav.update(&r.menu, &r.lay, &r.m, (10_000.0, 0.0), 0.0);
+        r.nav.update(&r.menu, &Context::default(), &r.lay, &r.m, (10_000.0, 0.0), 0.0);
         assert!((r.nav.px - r.m.limit(None)).abs() < 1e-3);
     }
 

@@ -146,6 +146,8 @@ action_fields! {
         #[serde(default)]
         when_off: Option<VariantDoc>,
         #[serde(default)]
+        enabled_if: Option<String>,
+        #[serde(default)]
         items: Vec<ItemDoc>,
     }
 }
@@ -480,6 +482,9 @@ impl Cx<'_> {
         if let Some(s) = &d.state {
             item = item.state(flag(s).map_err(|e| format!("{here}: state: {e}"))?);
         }
+        if let Some(s) = &d.enabled_if {
+            item = item.enabled_if(flag(s).map_err(|e| format!("{here}: enabled_if: {e}"))?);
+        }
         if let Some(v) = &d.when_off {
             let f = flag(&v.flag).map_err(|e| format!("{here}: when_off: {e}"))?;
             let icon = self.icon(v.icon.as_ref(), &v.label, None).map_err(|e| format!("{here}: when_off: {e}"))?;
@@ -692,6 +697,25 @@ mod tests {
         let set = parse(TEMPLATE, None, &crate::render::assets::exists).unwrap();
         assert_eq!(set.main, default_menu());
         assert!(set.apps.is_empty(), "примеры в шаблоне закомментированы");
+    }
+
+    #[test]
+    fn disabled_buttons_follow_flags() {
+        let set = one("menu:
+  - label: A
+    action: note
+    items:
+      - { label: L, keys: ctrl+win+left, enabled_if: desktop-prev }
+").unwrap();
+        let m = &set.main;
+        let kid = m.children(m.top()[0])[0];
+        assert!(m.is_disabled(kid, &crate::model::Context::default()));
+        assert!(!m.is_disabled(kid, &crate::model::Context::default().with(Flag::DesktopPrev, true)));
+        assert!(!m.is_disabled(m.top()[0], &crate::model::Context::default()), "без enabled_if доступна всегда");
+        assert!(m.uses(Flag::DesktopPrev) && !m.uses(Flag::DesktopNext));
+        assert!(err("menu:
+  - { label: A, action: note, enabled_if: sideways }
+").contains("enabled_if"));
     }
 
     #[test]

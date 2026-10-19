@@ -12,6 +12,9 @@ use crate::render::compose::{Canvas, Rect, SectorShape};
 use crate::render::palette as style;
 use crate::render::painter::Painter;
 use crate::render::raster::{self, Bake, PillKind, ProgramIcons, Rgba, Track, BOX, DIAM, DOT_BOX};
+/// Прозрачность недоступной кнопки.
+const DISABLED_ALPHA: f32 = 0.35;
+
 use anim::{Anim, Scene};
 use geom::ease_back;
 use layout::Layout;
@@ -229,7 +232,7 @@ impl Engine {
         }
         if self.active {
             self.nav
-                .update(&self.menu, &self.layout, &self.metrics, delta, now);
+                .update(&self.menu, ctx, &self.layout, &self.metrics, delta, now);
         }
         let dt = (now - self.t_prev).clamp(0.0, 0.05);
         self.t_prev = now;
@@ -337,7 +340,9 @@ impl Engine {
             let t = slot.arc.theta.to_radians();
             let icon_c = (c.0 + r * t.cos(), c.1 + r * t.sin());
             let icon = bake.icon(self.menu.icon(id, ctx));
-            dirty = dirty.union(cv.sector(&shape, icon, icon_c, h * ICON_K, &look, (a.p * 2.5).clamp(0.0, 1.0)));
+            // недоступная кнопка приглушена
+            let dim = if self.menu.is_disabled(id, ctx) { DISABLED_ALPHA } else { 1.0 };
+            dirty = dirty.union(cv.sector(&shape, icon, icon_c, h * ICON_K, &look, (a.p * 2.5).clamp(0.0, 1.0) * dim));
         }
 
         // подпись выбранной кнопки — со стороны центра, в промежутке между кнопками

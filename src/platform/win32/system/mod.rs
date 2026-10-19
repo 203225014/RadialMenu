@@ -2,6 +2,7 @@
 
 pub mod audio;
 pub mod autostart;
+pub mod desktops;
 pub mod dialogs;
 pub mod files;
 pub mod http;

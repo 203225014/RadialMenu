@@ -20,6 +20,8 @@
 #    dwell:    true — веер раскрывается, только если задержаться на кнопке
 #              (нужно кнопке, у которой есть и своё действие, и веер)
 #    state:    media — кнопка зеленеет, пока играет звук
+#    enabled_if: desktop-prev | desktop-next — кнопка доступна, только пока есть рабочий стол слева / справа
+#              от текущего (иначе она приглушена и не выбирается)
 #    when_off: { flag: media, icon: play, label: Плей } — другие иконка и подпись, пока звука нет
 #
 #  ДЕЙСТВИЕ (одно на кнопку)
@@ -138,7 +140,7 @@ profiles:
     layout: { start: top }
     menu:
       - label: Скриншот
-        icon: camera
+        icon: crop
         keys: win+shift+s
         dwell: true
         items:
@@ -147,6 +149,6 @@ profiles:
       - label: Рабочие столы
         icon: desktops
         items:
-          - { label: Стол назад, icon: arrow-left, keys: ctrl+win+left }
-          - { label: Стол вперёд, icon: arrow-right, keys: ctrl+win+right }
+          - { label: Стол назад, icon: desktop-prev, keys: ctrl+win+left, enabled_if: desktop-prev }
+          - { label: Стол вперёд, icon: desktop-next, keys: ctrl+win+right, enabled_if: desktop-next }
       - { label: Назад, icon: arrow-left, action: back }

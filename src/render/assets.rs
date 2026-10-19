@@ -8,10 +8,12 @@ macro_rules! svg {
 }
 
 /// Все имена, которые можно писать в файле меню (`blank` — кнопка без иконки).
-pub const NAMES: [&str; 22] = [
+pub const NAMES: [&str; 24] = [
     "arrow-left",
     "arrow-right",
-    "camera",
+    "crop",
+    "desktop-prev",
+    "desktop-next",
     "window",
     "desktops",
     "blank",
@@ -43,7 +45,9 @@ pub fn icon(key: &str) -> Option<&'static str> {
         "blank" => None,
         "arrow-left" => svg!("arrow-left"),
         "arrow-right" => svg!("arrow-right"),
-        "camera" => svg!("camera"),
+        "crop" => svg!("crop"),
+        "desktop-prev" => svg!("desktop-prev"),
+        "desktop-next" => svg!("desktop-next"),
         "window" => svg!("window"),
         "desktops" => svg!("desktops"),
         "folder" => svg!("folder"),

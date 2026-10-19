@@ -23,10 +23,14 @@ pub const MAX_DEPTH: usize = 3;
 pub enum Flag {
     /// Звучит аудио.
     Media,
+    /// Есть рабочий стол левее текущего.
+    DesktopPrev,
+    /// Есть рабочий стол правее текущего.
+    DesktopNext,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 1] = [Flag::Media];
+    pub const ALL: [Flag; 3] = [Flag::Media, Flag::DesktopPrev, Flag::DesktopNext];
 
     fn bit(self) -> u32 {
         1 << self as u32
@@ -35,6 +39,8 @@ impl Flag {
     pub fn key(self) -> &'static str {
         match self {
             Flag::Media => "media",
+            Flag::DesktopPrev => "desktop-prev",
+            Flag::DesktopNext => "desktop-next",
         }
     }
 
@@ -47,6 +53,7 @@ impl Flag {
         match (self, on) {
             (Flag::Media, true) => "играет",
             (Flag::Media, false) => "выкл",
+            (Flag::DesktopPrev | Flag::DesktopNext, _) => "",
         }
     }
 }
@@ -102,6 +109,8 @@ pub struct Node {
     pub off: Option<Variant>,
     /// Свой цвет подсветки (0xRRGGBB) вместо синего.
     pub color: Option<u32>,
+    /// Кнопка доступна, только пока флаг включён; иначе она приглушена и не выбирается.
+    pub enabled_if: Option<Flag>,
     pub children: Vec<NodeId>,
     pub parent: Option<NodeId>,
 }
@@ -145,6 +154,7 @@ impl Item {
                 state: None,
                 off: None,
                 color: None,
+                enabled_if: None,
                 children: Vec::new(),
                 parent: None,
             },
@@ -165,6 +175,10 @@ impl Item {
     }
     pub fn state(mut self, f: Flag) -> Item {
         self.node.state = Some(f);
+        self
+    }
+    pub fn enabled_if(mut self, f: Flag) -> Item {
+        self.node.enabled_if = Some(f);
         self
     }
     pub fn color(mut self, rgb: u32) -> Item {
@@ -291,6 +305,11 @@ impl Menu {
         1..self.nodes.len()
     }
 
+    /// Кнопка сейчас недоступна (её условие `enabled_if` не выполнено).
+    pub fn is_disabled(&self, id: NodeId, ctx: &Context) -> bool {
+        self.nodes[id].enabled_if.is_some_and(|f| !ctx.get(f))
+    }
+
     pub fn is_state_on(&self, id: NodeId, ctx: &Context) -> bool {
         self.nodes[id].state.is_some_and(|f| ctx.get(f))
     }
@@ -299,7 +318,7 @@ impl Menu {
     pub fn uses(&self, flag: Flag) -> bool {
         self.ids().any(|id| {
             let n = &self.nodes[id];
-            n.state == Some(flag) || n.off.as_ref().is_some_and(|v| v.flag == flag)
+            n.state == Some(flag) || n.enabled_if == Some(flag) || n.off.as_ref().is_some_and(|v| v.flag == flag)
         })
     }
 
