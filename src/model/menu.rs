@@ -400,9 +400,6 @@ pub struct Profile {
     pub menu: Menu,
 }
 
-/// Сколько профилей, кроме основного, можно завести.
-pub const MAX_PROFILES: usize = 3;
-
 /// Всё содержимое файла меню: общее меню, меню для отдельных программ и профили.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuSet {

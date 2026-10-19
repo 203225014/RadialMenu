@@ -3,6 +3,27 @@
 use super::action::Chord;
 use super::theme::ThemeMode;
 
+/// Дополнительное меню (профиль) со своей кнопкой мыши и/или сочетанием; состав — в файле
+/// `menu-{id}.yaml` рядом с `menu.yaml`. Основное меню — это `button`/`hotkey` настроек.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProfileCfg {
+    /// 2..=4: по нему называется файл меню и ключи в config.txt.
+    pub id: u8,
+    /// 0 — мышь не используется, 1 — «назад», 2 — «вперёд».
+    pub button: u8,
+    pub hotkey: Option<Chord>,
+}
+
+impl ProfileCfg {
+    pub fn file_name(&self) -> String {
+        format!("menu-{}.yaml", self.id)
+    }
+}
+
+/// Сколько профилей, кроме основного меню, можно завести.
+pub const MAX_PROFILES: usize = 3;
+const PROFILE_IDS: std::ops::RangeInclusive<u8> = 2..=4;
+
 pub const SENS_RANGE: (u32, u32) = (20, 300);
 pub const SIZE_RANGE: (u32, u32) = (50, 150);
 pub const DWELL_RANGE: (u32, u32) = (100, 2000);
@@ -25,6 +46,8 @@ pub struct Settings {
     pub theme: ThemeMode,
     /// Раз в сутки спрашивать у GitHub, не вышла ли новая версия.
     pub check_updates: bool,
+    /// Дополнительные меню на другие кнопки/сочетания.
+    pub profiles: Vec<ProfileCfg>,
 }
 
 impl Default for Settings {
@@ -38,6 +61,8 @@ impl Default for Settings {
             dwell_ms: 450,
             theme: ThemeMode::Auto,
             check_updates: true,
+            // навигация жестами на боковую «вперёд» (меню — в menu-2.yaml)
+            profiles: vec![ProfileCfg { id: 2, button: 2, hotkey: None }],
         }
     }
 }
@@ -45,6 +70,7 @@ impl Default for Settings {
 impl Settings {
     pub fn parse(text: &str) -> Settings {
         let mut s = Settings::default();
+        s.profiles.clear(); // в файле настроек профили перечислены явно; нет строк — нет профилей
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -69,7 +95,26 @@ impl Settings {
                         _ => s.check_updates,
                     }
                 }
-                _ => {}
+                _ => {
+                    if let Some((id, field)) = k.strip_prefix("profile").and_then(|r| {
+                        let (num, field) = r.split_once('_').unwrap_or((r, ""));
+                        Some((num.parse::<u8>().ok().filter(|n| PROFILE_IDS.contains(n))?, field))
+                    }) {
+                        let at = match s.profiles.iter().position(|p| p.id == id) {
+                            Some(i) => i,
+                            None => {
+                                s.profiles.push(ProfileCfg { id, button: 0, hotkey: None });
+                                s.profiles.len() - 1
+                            }
+                        };
+                        let p = &mut s.profiles[at];
+                        match field {
+                            "button" => p.button = v.parse().unwrap_or(0),
+                            "hotkey" => p.hotkey = Chord::parse(v).ok(),
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
         s.normalize();
@@ -84,6 +129,15 @@ impl Settings {
         if self.button == 0 && self.hotkey.is_none() {
             self.button = 1;
         }
+        // профиль без способа вызова бесполезен; лишние — отбрасываем
+        for p in &mut self.profiles {
+            if p.button > 2 {
+                p.button = 0;
+            }
+        }
+        self.profiles.retain(|p| p.button != 0 || p.hotkey.is_some());
+        self.profiles.sort_by_key(|p| p.id);
+        self.profiles.truncate(MAX_PROFILES);
         self.sens_percent = self.sens_percent.clamp(SENS_RANGE.0, SENS_RANGE.1);
         self.size_percent = self.size_percent.clamp(SIZE_RANGE.0, SIZE_RANGE.1);
         self.dwell_ms = self.dwell_ms.clamp(DWELL_RANGE.0, DWELL_RANGE.1);
@@ -114,6 +168,21 @@ impl Settings {
             || self.dwell_ms != other.dwell_ms
     }
 
+    /// Строки профилей для config.txt.
+    fn profiles_text(&self) -> String {
+        self.profiles
+            .iter()
+            .map(|p| {
+                format!(
+                    "# профиль {id}: своё меню (menu-{id}.yaml) на другой кнопке и/или сочетании\nprofile{id} = 1\nprofile{id}_button = {}\nprofile{id}_hotkey = {}\n",
+                    p.button,
+                    p.hotkey.map(|c| c.to_text()).unwrap_or_default(),
+                    id = p.id
+                )
+            })
+            .collect()
+    }
+
     pub fn to_text(&self) -> String {
         format!(
             "# Радиальное меню (удобнее менять через «Настройки» в трее)\n\
@@ -124,7 +193,7 @@ impl Settings {
              # размер меню, % ({}..{})\nsize_percent = {}\n\
              # задержка раскрытия подменю, мс ({}..{})\ndwell_ms = {}\n\
              # тема: auto (как в системе), light, dark\ntheme = {}\n\
-             # проверять обновления раз в сутки (1/0); запрос идёт только на github.com\ncheck_updates = {}\n",
+             # проверять обновления раз в сутки (1/0); запрос идёт только на github.com\ncheck_updates = {}\n{}",
             self.button,
             self.hotkey.map(|c| c.to_text()).unwrap_or_default(),
             self.vault,
@@ -139,6 +208,7 @@ impl Settings {
             self.dwell_ms,
             self.theme.key(),
             u8::from(self.check_updates),
+            self.profiles_text(),
         )
     }
 }
@@ -199,6 +269,29 @@ mod tests {
         assert_eq!((s.button, s.hotkey.unwrap().to_text().as_str()), (0, "alt+q"));
         let s = Settings::parse("hotkey = ctrl+alt\n");
         assert_eq!(s.hotkey, None, "одни модификаторы — не сочетание");
+    }
+
+    #[test]
+    fn profiles_round_trip_and_default_to_navigation() {
+        let d = Settings::default();
+        assert_eq!(d.profiles, vec![ProfileCfg { id: 2, button: 2, hotkey: None }]);
+        assert!(Settings::parse("").profiles.is_empty(), "старый файл без профилей остаётся без них");
+        let s = Settings {
+            profiles: vec![
+                ProfileCfg { id: 2, button: 2, hotkey: None },
+                ProfileCfg { id: 4, button: 0, hotkey: Chord::parse("ctrl+alt+n").ok() },
+            ],
+            ..Settings::default()
+        };
+        assert_eq!(Settings::parse(&s.to_text()), s);
+        assert_eq!(s.profiles[1].file_name(), "menu-4.yaml");
+    }
+
+    #[test]
+    fn broken_profiles_are_dropped() {
+        // без кнопки и сочетания, с чужим номером и сверх лимита
+        let s = Settings::parse("profile2 = 1\nprofile3_button = 1\nprofile9_button = 1\nprofile4_button = 7\n");
+        assert_eq!(s.profiles.iter().map(|p| p.id).collect::<Vec<_>>(), vec![3]);
     }
 
     #[test]

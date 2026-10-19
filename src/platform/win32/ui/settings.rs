@@ -333,12 +333,19 @@ unsafe fn run(hwnd: HWND, cmd: Cmd) {
             hook::set_recorder(None);
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
-        Cmd::OpenMenuFile => {
-            let status = match files::ensure_menu_file() {
+        Cmd::OpenMenuFile(id) => {
+            let path = match id {
+                0 => files::ensure_menu_file(),
+                id => with(|w| w.form.draft.profiles.iter().find(|p| p.id == id).copied())
+                    .flatten()
+                    .and_then(|p| files::ensure_profile_file(&p)),
+            };
+            let status = match path {
                 Some(p) => {
                     send::open(&p.to_string_lossy());
+                    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     Status {
-                        text: "menu.yaml открыт. Правки применятся при следующем открытии меню".into(),
+                        text: format!("{name} открыт. Правки применятся в течение нескольких секунд"),
                         bad: false,
                     }
                 }

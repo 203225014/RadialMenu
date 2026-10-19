@@ -4,7 +4,7 @@
 
 use crate::model::settings::{DWELL_RANGE, SENS_RANGE, SIZE_RANGE};
 use crate::model::action::vk;
-use crate::model::{Chord, Settings, Theme, ThemeMode};
+use crate::model::{Chord, ProfileCfg, Settings, Theme, ThemeMode, MAX_PROFILES};
 use crate::render::painter::{blend, Align, Painter};
 use crate::render::palette::{self, Ui};
 
@@ -20,16 +20,18 @@ const BROWSE_W: f32 = 84.0;
 const VALUE_W: f32 = 64.0;
 
 // строки окна
-const R_THEME: usize = 0;
+// вверху — меню (вкладки профилей и то, что относится к выбранной вкладке), ниже — общее
+const R_TABS: usize = 0;
 const R_BUTTON: usize = 1;
 const R_HOTKEY: usize = 2;
-const R_SIZE: usize = 3;
-const R_SENS: usize = 4;
-const R_DWELL: usize = 5;
-const R_VAULT: usize = 6;
-const R_AUTO: usize = 7;
-const R_MENU: usize = 8;
-const R_UPDATE: usize = 9;
+const R_MENU: usize = 3;
+const R_THEME: usize = 4;
+const R_SIZE: usize = 5;
+const R_SENS: usize = 6;
+const R_DWELL: usize = 7;
+const R_VAULT: usize = 8;
+const R_AUTO: usize = 9;
+const R_UPDATE: usize = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slider {
@@ -90,6 +92,10 @@ pub enum Target {
     Browse,
     Autostart,
     MenuFile,
+    /// Вкладка меню: 0 — основное, дальше — профили.
+    Tab(usize),
+    AddProfile,
+    RemoveProfile,
     /// Кнопка в строке «Обновление» (что она делает — зависит от состояния).
     Update,
     Cancel,
@@ -109,8 +115,8 @@ pub enum Cmd {
     Save,
     /// Выбрать папку хранилища.
     Browse,
-    /// Открыть menu.yaml в редакторе.
-    OpenMenuFile,
+    /// Открыть файл меню в редакторе: 0 — menu.yaml, иначе номер профиля (menu-N.yaml).
+    OpenMenuFile(u8),
     /// Начать запись сочетания: платформа отключает свой перехват клавиш, пока идёт запись.
     StartRecording,
     /// Запись закончена (или отменена): вернуть перехват и перерисовать.
@@ -197,6 +203,8 @@ pub struct SettingsForm {
     /// Версия этой сборки, «0.8.0».
     pub version: String,
     pub update: UpdateView,
+    /// Выбранная вкладка меню: 0 — основное, k — профиль `draft.profiles[k - 1]`.
+    pub selected: usize,
     scale: f32,
     hover: Option<Target>,
     pressed: Option<Target>,
@@ -204,16 +212,17 @@ pub struct SettingsForm {
     recording: bool,
 }
 
-const ROWS: [&str; 10] = [
-    "Тема",
+const ROWS: [&str; 11] = [
+    "",
     "Кнопка мыши",
     "Сочетание клавиш",
+    "Состав меню",
+    "Тема",
     "Размер меню",
     "Чувствительность",
     "Задержка веера",
     "Хранилище заметок",
     "Запуск с системой",
-    "Состав меню",
     "Обновление",
 ];
 
@@ -225,6 +234,7 @@ impl SettingsForm {
             status: None,
             version: String::new(),
             update: UpdateView::Idle,
+            selected: 0,
             scale: scale.max(0.5),
             hover: None,
             pressed: None,
@@ -236,6 +246,45 @@ impl SettingsForm {
     /// Идёт запись сочетания: клавиши — в `record`, а не в `key`.
     pub fn is_recording(&self) -> bool {
         self.recording
+    }
+
+    /// Кнопка мыши и сочетание выбранной вкладки.
+    fn current(&self) -> (u8, Option<Chord>) {
+        match self.selected.checked_sub(1).and_then(|k| self.draft.profiles.get(k)) {
+            Some(p) => (p.button, p.hotkey),
+            None => (self.draft.button, self.draft.hotkey),
+        }
+    }
+
+    fn set_button(&mut self, b: u8) {
+        match self.selected.checked_sub(1).and_then(|k| self.draft.profiles.get_mut(k)) {
+            Some(p) => p.button = b,
+            None => self.draft.button = b,
+        }
+    }
+
+    fn set_hotkey(&mut self, c: Option<Chord>) {
+        match self.selected.checked_sub(1).and_then(|k| self.draft.profiles.get_mut(k)) {
+            Some(p) => p.hotkey = c,
+            None => self.draft.hotkey = c,
+        }
+    }
+
+    /// Номер файла меню выбранной вкладки: 0 — menu.yaml, иначе `menu-N.yaml`.
+    fn menu_id(&self) -> u8 {
+        self.selected.checked_sub(1).and_then(|k| self.draft.profiles.get(k)).map_or(0, |p| p.id)
+    }
+
+    fn can_add_profile(&self) -> bool {
+        self.draft.profiles.len() < MAX_PROFILES
+    }
+
+    /// Название вкладки.
+    fn tab_name(&self, k: usize) -> String {
+        match k.checked_sub(1).and_then(|k| self.draft.profiles.get(k)) {
+            Some(p) => format!("Профиль {}", p.id),
+            None => "Основное".to_string(),
+        }
     }
 
     fn s(&self, v: f32) -> f32 {
@@ -269,6 +318,7 @@ impl SettingsForm {
         let y = Self::row_y(row) + (ROW - CTRL_H) / 2.0;
         self.b(CTRL_X, y, w, CTRL_H)
     }
+
 
     fn ctrl_w() -> f32 {
         W - PAD - CTRL_X
@@ -352,8 +402,25 @@ impl SettingsForm {
         }
     }
 
+    /// Вкладки: основное меню, профили и «+» на всю ширину окна.
+    fn tab_boxes(&self) -> Vec<Box2> {
+        let cells = 1 + self.draft.profiles.len() + usize::from(self.can_add_profile());
+        let y = Self::row_y(R_TABS) + (ROW - CTRL_H) / 2.0;
+        let (x0, full) = (PAD, W - 2.0 * PAD);
+        let w = full / cells as f32;
+        (0..cells).map(|i| self.b(x0 + w * i as f32, y, w, CTRL_H)).collect()
+    }
+
     fn menu_file_box(&self) -> Box2 {
-        self.control(R_MENU, 190.0)
+        self.control(R_MENU, if self.selected == 0 { 190.0 } else { 150.0 })
+    }
+
+    /// «Удалить» — только у профилей.
+    fn remove_box(&self) -> Option<Box2> {
+        (self.selected != 0).then(|| {
+            let c = self.control(R_MENU, Self::ctrl_w() - 150.0 - 8.0);
+            Box2 { x: self.s(CTRL_X + 150.0 + 8.0), ..c }
+        })
     }
 
     /// Кнопка строки «Обновление» и её подпись; `None` — пока идёт работа, кнопки нет.
@@ -389,6 +456,11 @@ impl SettingsForm {
         if y < self.s(HEAD) {
             return Some(Target::Header);
         }
+        for (i, b) in self.tab_boxes().iter().enumerate() {
+            if b.contains(x, y) {
+                return Some(if i <= self.draft.profiles.len() { Target::Tab(i) } else { Target::AddProfile });
+            }
+        }
         for (b, m) in self.seg_boxes(R_THEME, 3).iter().zip(ThemeMode::ALL) {
             if b.contains(x, y) {
                 return Some(Target::Theme(m));
@@ -414,6 +486,7 @@ impl SettingsForm {
             (self.browse_box(), Target::Browse),
             (self.toggle_box(), Target::Autostart),
             (self.menu_file_box(), Target::MenuFile),
+            (self.remove_box().unwrap_or(Box2 { x: -1.0, y: -1.0, w: 0.0, h: 0.0 }), Target::RemoveProfile),
             (self.update_button().map_or(Box2 { x: -1.0, y: -1.0, w: 0.0, h: 0.0 }, |b| b.0), Target::Update),
             (cancel, Target::Cancel),
             (save, Target::Save),
@@ -491,7 +564,15 @@ impl SettingsForm {
                 Cmd::Redraw
             }
             Target::Button(b) => {
-                self.draft.button = b;
+                self.set_button(b);
+                Cmd::Redraw
+            }
+            Target::Tab(k) => {
+                self.selected = k.min(self.draft.profiles.len());
+                Cmd::Redraw
+            }
+            Target::AddProfile => {
+                self.add_profile();
                 Cmd::Redraw
             }
             Target::Slider(s) => {
@@ -526,7 +607,7 @@ impl SettingsForm {
             Target::Close | Target::Cancel => Cmd::Close,
             Target::Save => self.try_save(),
             Target::ClearHotkey => {
-                self.draft.hotkey = None;
+                self.set_hotkey(None);
                 if std::mem::take(&mut self.recording) {
                     Cmd::StopRecording
                 } else {
@@ -534,7 +615,14 @@ impl SettingsForm {
                 }
             }
             Target::Browse => Cmd::Browse,
-            Target::MenuFile => Cmd::OpenMenuFile,
+            Target::MenuFile => Cmd::OpenMenuFile(self.menu_id()),
+            Target::RemoveProfile => {
+                if let Some(k) = self.selected.checked_sub(1).filter(|&k| k < self.draft.profiles.len()) {
+                    self.draft.profiles.remove(k);
+                }
+                self.selected = 0;
+                Cmd::Redraw
+            }
             Target::Update => match self.update {
                 UpdateView::Available(_) | UpdateView::Failed { retry: true, .. } => Cmd::Update,
                 UpdateView::Idle | UpdateView::UpToDate | UpdateView::Failed { .. } => Cmd::CheckUpdates,
@@ -581,13 +669,13 @@ impl SettingsForm {
             return Cmd::StopRecording;
         }
         if plain && (key == vk::BACK || key == vk::DELETE) {
-            self.draft.hotkey = None;
+            self.set_hotkey(None);
             self.recording = false;
             return Cmd::StopRecording;
         }
         match Chord::from_press(key, ctrl, alt, shift, win) {
             Some(c) => {
-                self.draft.hotkey = Some(c);
+                self.set_hotkey(Some(c));
                 self.recording = false;
                 Cmd::StopRecording
             }
@@ -595,13 +683,46 @@ impl SettingsForm {
         }
     }
 
-    /// Сохранить можно, только если меню хоть чем-то открывается.
+    /// Новый профиль: ближайший свободный номер и боковая кнопка, которую ещё никто не занял.
+    fn add_profile(&mut self) {
+        if !self.can_add_profile() {
+            return;
+        }
+        let id = (2u8..=4).find(|id| !self.draft.profiles.iter().any(|p| p.id == *id)).unwrap_or(2);
+        let used = |b: u8| self.draft.button == b || self.draft.profiles.iter().any(|p| p.button == b);
+        let button = [1u8, 2].into_iter().find(|&b| !used(b)).unwrap_or(0);
+        self.draft.profiles.push(ProfileCfg { id, button, hotkey: None });
+        self.draft.profiles.sort_by_key(|p| p.id);
+        self.selected = self.draft.profiles.iter().position(|p| p.id == id).map_or(0, |k| k + 1);
+    }
+
+    /// Не сохраняем, если какое-то меню нечем открыть или два меню открываются одним и тем же.
+    fn check_triggers(&self) -> Result<(), (usize, String)> {
+        let all: Vec<(usize, u8, Option<Chord>)> = std::iter::once((0, self.draft.button, self.draft.hotkey))
+            .chain(self.draft.profiles.iter().enumerate().map(|(k, p)| (k + 1, p.button, p.hotkey)))
+            .collect();
+        for &(tab, button, hotkey) in &all {
+            if button == 0 && hotkey.is_none() {
+                return Err((tab, format!("{}: выберите кнопку мыши или задайте сочетание", self.tab_name(tab))));
+            }
+        }
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                let same_button = a.1 != 0 && a.1 == b.1;
+                let same_key = a.2.is_some() && a.2 == b.2;
+                if same_button || same_key {
+                    let what = if same_button { "кнопка мыши" } else { "сочетание" };
+                    return Err((b.0, format!("{} и {}: одна и та же {what}", self.tab_name(a.0), self.tab_name(b.0))));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn try_save(&mut self) -> Cmd {
-        if self.draft.button == 0 && self.draft.hotkey.is_none() {
-            self.status = Some(Status {
-                text: "Меню нечем открыть: выберите кнопку мыши или задайте сочетание".into(),
-                bad: true,
-            });
+        if let Err((tab, text)) = self.check_triggers() {
+            self.selected = tab; // показать, где поправить
+            self.status = Some(Status { text, bad: true });
             return Cmd::Redraw;
         }
         Cmd::Save
@@ -649,10 +770,22 @@ impl SettingsForm {
         p.line(cx - k, cy + k, cx + k, cy - k, c.dim, 1.0, self.s(1.6));
         p.line(self.s(PAD), self.s(HEAD), w - self.s(PAD), self.s(HEAD), c.edge, 0.25, 1.0);
 
-        for (i, label) in ROWS.iter().enumerate() {
+        for (i, label) in ROWS.iter().enumerate().filter(|(_, l)| !l.is_empty()) {
             let cy = self.s(Self::row_y(i) + ROW / 2.0);
             p.text(&f.regular, label, self.s(PAD), cy, self.s(14.0), c.fg, Align::Left);
         }
+
+        // вкладки меню: основное, профили, «+»
+        let boxes = self.tab_boxes();
+        let n_tabs = 1 + self.draft.profiles.len();
+        let mut names: Vec<String> = (0..n_tabs).map(|k| self.tab_name(k)).collect();
+        if boxes.len() > n_tabs {
+            names.push("+".to_string());
+        }
+        let labels: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.segments(p, f, &c, &boxes, &labels, self.selected, |i| {
+            if i < n_tabs { Target::Tab(i) } else { Target::AddProfile }
+        });
 
         // тема и кнопка мыши — сегменты
         let themes = ["Авто", "Светлая", "Тёмная"];
@@ -660,7 +793,7 @@ impl SettingsForm {
         let sel = ThemeMode::ALL.iter().position(|&m| m == self.draft.theme).unwrap_or(0);
         self.segments(p, f, &c, &boxes, &themes, sel, |i| Target::Theme(ThemeMode::ALL[i]));
         let boxes = self.seg_boxes(R_BUTTON, 3);
-        let sel = self.draft.button.min(2) as usize;
+        let sel = self.current().0.min(2) as usize;
         self.segments(p, f, &c, &boxes, &["Нет", "«Назад»", "«Вперёд»"], sel, |i| {
             Target::Button(i as u8)
         });
@@ -676,7 +809,7 @@ impl SettingsForm {
             (c.edge, 0.45, 1.0)
         };
         p.stroke_rrect(hb.x, hb.y, hb.w, hb.h, self.s(8.0), edge, edge_a, width);
-        let (text, col) = match (self.recording, self.draft.hotkey) {
+        let (text, col) = match (self.recording, self.current().1) {
             (true, _) => ("Нажмите сочетание…".to_string(), c.acc),
             (false, Some(k)) => (k.display(), c.fg),
             (false, None) => ("не задано".to_string(), c.dim),
@@ -727,7 +860,14 @@ impl SettingsForm {
             Align::Left,
         );
 
-        self.button(p, f, &c, self.menu_file_box(), "Открыть menu.yaml", Target::MenuFile, false);
+        let file = match self.menu_id() {
+            0 => "menu.yaml".to_string(),
+            id => format!("menu-{id}.yaml"),
+        };
+        self.button(p, f, &c, self.menu_file_box(), &format!("Открыть {file}"), Target::MenuFile, false);
+        if let Some(rb) = self.remove_box() {
+            self.button(p, f, &c, rb, "Удалить", Target::RemoveProfile, false);
+        }
 
         self.draw_update(p, f, &c);
 
@@ -856,7 +996,7 @@ mod tests {
     use super::*;
 
     fn form() -> SettingsForm {
-        SettingsForm::new(Settings::default(), false, 1.0)
+        SettingsForm::new(Settings { profiles: vec![], ..Settings::default() }, false, 1.0)
     }
 
     fn center(b: Box2) -> (f32, f32) {
@@ -890,7 +1030,7 @@ mod tests {
         let (cancel, save) = f.footer_boxes();
         boxes.push((cancel, Target::Cancel));
         boxes.push((save, Target::Save));
-        for (b, m) in f.seg_boxes(0, 3).into_iter().zip(ThemeMode::ALL) {
+        for (b, m) in f.seg_boxes(R_THEME, 3).into_iter().zip(ThemeMode::ALL) {
             boxes.push((b, Target::Theme(m)));
         }
         let (w, h) = f.size();
@@ -905,7 +1045,7 @@ mod tests {
     #[test]
     fn clicks_edit_the_draft() {
         let mut f = form();
-        let b = f.seg_boxes(0, 3)[1];
+        let b = f.seg_boxes(R_THEME, 3)[1];
         assert_eq!(click(&mut f, b), Cmd::Redraw);
         assert_eq!(f.draft.theme, ThemeMode::Light);
         let b = f.seg_boxes(R_BUTTON, 3)[2];
@@ -920,7 +1060,7 @@ mod tests {
         let b = f.browse_box();
         assert_eq!(click(&mut f, b), Cmd::Browse);
         let b = f.menu_file_box();
-        assert_eq!(click(&mut f, b), Cmd::OpenMenuFile);
+        assert_eq!(click(&mut f, b), Cmd::OpenMenuFile(0));
         let b = f.vault_box();
         assert_eq!(click(&mut f, b), Cmd::FocusVault);
     }
@@ -953,6 +1093,68 @@ mod tests {
             let c = f.control(R_UPDATE, BTN_W);
             assert_ne!(f.hit(f.s(W - PAD - BTN_W) + 5.0, c.cy()), Some(Target::Update));
         }
+    }
+
+    fn tab(f: &SettingsForm, i: usize) -> Box2 {
+        f.tab_boxes()[i]
+    }
+
+    #[test]
+    fn profiles_are_added_selected_edited_and_removed() {
+        let mut f = form();
+        assert_eq!(f.tab_boxes().len(), 2, "основное и «+»");
+        let plus = tab(&f, 1);
+        assert_eq!(click(&mut f, plus), Cmd::Redraw); // «+»
+        assert_eq!(f.draft.profiles, vec![ProfileCfg { id: 2, button: 2, hotkey: None }], "берётся свободная боковая кнопка");
+        assert_eq!(f.selected, 1);
+        // кнопки и сочетание правят выбранный профиль, а не основное меню
+        let b = f.seg_boxes(R_BUTTON, 3)[1];
+        click(&mut f, b);
+        assert_eq!((f.draft.profiles[0].button, f.draft.button), (1, 1));
+        let main_tab = tab(&f, 0);
+        click(&mut f, main_tab);
+        assert_eq!(f.selected, 0);
+        let b = f.seg_boxes(R_BUTTON, 3)[2];
+        click(&mut f, b);
+        assert_eq!((f.draft.button, f.draft.profiles[0].button), (2, 1));
+        // файл меню — у каждой вкладки свой
+        let b = f.menu_file_box();
+        assert_eq!(click(&mut f, b), Cmd::OpenMenuFile(0));
+        let t1 = tab(&f, 1);
+        click(&mut f, t1);
+        let b = f.menu_file_box();
+        assert_eq!(click(&mut f, b), Cmd::OpenMenuFile(2));
+        // удаление возвращает на основное
+        let b = f.remove_box().expect("у профиля есть «Удалить»");
+        click(&mut f, b);
+        assert!(f.draft.profiles.is_empty() && f.selected == 0 && f.remove_box().is_none());
+    }
+
+    #[test]
+    fn at_most_three_profiles() {
+        let mut f = form();
+        for _ in 0..5 {
+            f.add_profile();
+        }
+        assert_eq!(f.draft.profiles.iter().map(|p| p.id).collect::<Vec<_>>(), vec![2, 3, 4]);
+        assert_eq!(f.tab_boxes().len(), 4, "«+» больше не нужен");
+    }
+
+    #[test]
+    fn saving_checks_every_menu_has_its_own_trigger() {
+        let mut f = form();
+        f.add_profile(); // кнопка «вперёд»
+        assert_eq!(f.key(Key::Enter), Cmd::Save);
+        // профиль на ту же кнопку, что основное меню
+        f.draft.profiles[0].button = f.draft.button;
+        assert_eq!(f.key(Key::Enter), Cmd::Redraw);
+        let st = f.status.clone().unwrap();
+        assert!(st.bad && st.text.contains("одна и та же кнопка мыши"), "{}", st.text);
+        assert_eq!(f.selected, 1, "показали профиль, где править");
+        // профиль без кнопки и сочетания
+        f.draft.profiles[0].button = 0;
+        assert_eq!(f.key(Key::Enter), Cmd::Redraw);
+        assert!(f.status.unwrap().text.contains("Профиль 2: выберите кнопку"));
     }
 
     #[test]

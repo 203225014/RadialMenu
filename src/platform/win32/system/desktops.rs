@@ -30,7 +30,7 @@ fn read(name: PCWSTR) -> Option<Vec<u8>> {
 
 /// Номер текущего стола (с нуля) и число столов по содержимому двух значений реестра.
 pub fn position(ids: &[u8], current: &[u8]) -> Option<(usize, usize)> {
-    if ids.is_empty() || ids.len() % 16 != 0 || current.len() < 16 {
+    if ids.is_empty() || !ids.len().is_multiple_of(16) || current.len() < 16 {
         return None;
     }
     let index = ids.chunks_exact(16).position(|id| id == &current[..16])?;

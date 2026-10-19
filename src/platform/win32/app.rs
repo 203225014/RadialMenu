@@ -74,7 +74,7 @@ struct App {
     menu_error: Option<MenuError>,
     theme: Follower,
     /// Время изменения config.txt и menu.yaml на момент последнего чтения.
-    stamps: (Option<SystemTime>, Option<SystemTime>),
+    stamps: Stamps,
     hwnd: isize,
     timer: isize,
     frame_ms: u32,
@@ -106,10 +106,14 @@ fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
     APP.with(|a| a.with(f))
 }
 
-fn stamps() -> (Option<SystemTime>, Option<SystemTime>) {
+/// Времена изменения config.txt, menu.yaml и файлов меню профилей.
+type Stamps = (Option<SystemTime>, Option<SystemTime>, Vec<Option<SystemTime>>);
+
+fn stamps(settings: &Settings) -> Stamps {
     (
         files::mtime(&files::config_path()),
         files::mtime(&files::menu_path()),
+        files::profile_stamps(settings),
     )
 }
 
@@ -166,7 +170,7 @@ fn warn_menu(hwnd: isize, paused: bool, e: &MenuError) {
     tray::notify(
         util::h(hwnd),
         &tip(paused),
-        "Ошибка в menu.yaml",
+        "Ошибка в файле меню",
         &format!("{e}\nПоказано меню по умолчанию."),
     );
 }
@@ -215,14 +219,14 @@ fn sync_triggers(app: &App) {
     hook::set_trigger(0, app.settings.button, app.settings.hotkey);
     for n in 0..MAX_PROFILES {
         let (mut button, mut hotkey) = (0, None);
-        if let Some(p) = app.menus.profiles.get(n) {
-            (button, hotkey) = (p.trigger.button, p.trigger.hotkey);
+        if let Some(p) = app.settings.profiles.get(n) {
+            (button, hotkey) = (p.button, p.hotkey);
             if button != 0 && button == app.settings.button {
-                diag::log(&format!("профиль «{}»: кнопка занята основным меню, кнопка профиля не работает", p.name));
+                diag::log(&format!("профиль {}: кнопка занята основным меню, кнопка профиля не работает", p.id));
                 button = 0;
             }
             if hotkey.is_some() && hotkey == app.settings.hotkey {
-                diag::log(&format!("профиль «{}»: сочетание занято основным меню, сочетание профиля не работает", p.name));
+                diag::log(&format!("профиль {}: сочетание занято основным меню, сочетание профиля не работает", p.id));
                 hotkey = None;
             }
         }
@@ -230,29 +234,36 @@ fn sync_triggers(app: &App) {
     }
 }
 
+/// Перечитать файлы меню (основное и профилей) и пересобрать меню, если что-то изменилось.
+fn reload_menus(app: &mut App) {
+    let (menus, err) = files::load_menu(&app.settings);
+    if let Some(e) = &err {
+        warn_menu(app.hwnd, app.paused, e);
+    }
+    app.menu_error = err;
+    if menus != app.menus {
+        app.menus = menus;
+        rebuild(app);
+    }
+    sync_triggers(app);
+}
+
 /// Файлы поправили руками — перечитать (зовётся перед показом меню, это один stat на файл).
 fn reload_if_changed(app: &mut App) {
-    let now = stamps();
+    let now = stamps(&app.settings);
     if now == app.stamps {
         return;
     }
-    let (config_changed, menu_changed) = (now.0 != app.stamps.0, now.1 != app.stamps.1);
-    app.stamps = now;
+    let config_changed = now.0 != app.stamps.0;
+    let files_changed = now.1 != app.stamps.1 || now.2 != app.stamps.2;
+    let old_profiles = app.settings.profiles.clone();
     if config_changed {
         apply_settings(app, files::load_settings());
     }
-    if menu_changed {
-        let (menus, err) = files::load_menu();
-        if let Some(e) = &err {
-            warn_menu(app.hwnd, app.paused, e);
-        }
-        app.menu_error = err;
-        if menus != app.menus {
-            app.menus = menus;
-            rebuild(app);
-            sync_triggers(app);
-        }
+    if files_changed || app.settings.profiles != old_profiles {
+        reload_menus(app);
     }
+    app.stamps = stamps(&app.settings);
 }
 
 /// «Сохранить» в окне настроек.
@@ -262,8 +273,12 @@ fn save_settings(new: Settings, autostart_on: bool) -> Result<(), String> {
         autostart::set(autostart_on);
     }
     with_app(|app| {
+        let old_profiles = app.settings.profiles.clone();
         apply_settings(app, new);
-        app.stamps.0 = files::mtime(&files::config_path()); // свою запись не перечитываем
+        if app.settings.profiles != old_profiles {
+            reload_menus(app); // появились/исчезли профили: файлы меню (создаются при первом обращении)
+        }
+        app.stamps = stamps(&app.settings); // свою запись не перечитываем
     });
     Ok(())
 }
@@ -286,7 +301,7 @@ fn set_vault(path: &str) {
 fn open_settings() {
     let Some((s, status)) = with_app(|app| {
         let status = app.menu_error.as_ref().map(|e| Status {
-            text: format!("menu.yaml, {e}"),
+            text: e.to_string(),
             bad: true,
         });
         (app.settings.clone(), status)
@@ -640,7 +655,7 @@ fn setup() -> Result<HWND, String> {
         TASKBAR_CREATED.with(|t| t.set(RegisterWindowMessageW(w!("TaskbarCreated"))));
 
         let settings = files::load_settings();
-        let (menus, menu_error) = files::load_menu();
+        let (menus, menu_error) = files::load_menu(&settings);
         let theme = Follower::new(settings.theme);
         let engines = build_engines(&settings, &menus, theme.theme());
         let layer = Layer::new(window_size(&engines)).map_err(|e| format!("окно меню: {e}"))?;
@@ -649,6 +664,7 @@ fn setup() -> Result<HWND, String> {
             .or_else(|_| CreateWaitableTimerExW(None, None, 0, 0x1F0003))
             .map_err(|e| format!("таймер: {e}"))?;
         let (button, hotkey) = (settings.button, settings.hotkey);
+        let first_stamps = stamps(&settings);
         APP.with(|a| {
             a.set(App {
                 engines,
@@ -659,7 +675,7 @@ fn setup() -> Result<HWND, String> {
                 menus,
                 menu_error: menu_error.clone(),
                 theme,
-                stamps: stamps(),
+                stamps: first_stamps,
                 hwnd: hwnd.0 as isize,
                 timer: timer.0 as isize,
                 frame_ms: frame_period_ms(),

@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use super::util::log_error;
 use crate::model::menu_yaml::{self, MenuError};
-use crate::model::{default_menu, MenuSet, Settings};
+use crate::model::{default_menu, MenuSet, Profile, ProfileCfg, Settings, Trigger};
 use crate::render::assets;
 
 fn dir() -> Option<PathBuf> {
@@ -62,29 +62,66 @@ pub fn save_settings(s: &Settings) -> Result<(), String> {
     std::fs::write(&p, s.to_text()).map_err(|e| format!("не удалось записать настройки: {e}"))
 }
 
-/// Меню из файла. Ошибка в файле не мешает работать: берём меню по умолчанию,
-/// а ошибку возвращаем, чтобы её показать.
-pub fn load_menu() -> (MenuSet, Option<MenuError>) {
-    let Some(path) = ensure_menu_file() else {
-        return (MenuSet::single(default_menu()), None);
+/// Файл меню профиля (`menu-2.yaml`…).
+pub fn profile_path(p: &ProfileCfg) -> Option<PathBuf> {
+    dir().map(|d| d.join(p.file_name()))
+}
+
+/// Время изменения файлов меню профилей — чтобы заметить правки.
+pub fn profile_stamps(settings: &Settings) -> Vec<Option<SystemTime>> {
+    settings.profiles.iter().map(|p| mtime(&profile_path(p))).collect()
+}
+
+/// Прочитать и разобрать файл меню. Ошибка — с именем файла, чтобы было понятно, где искать.
+fn read_menu(path: &std::path::Path) -> Result<MenuSet, MenuError> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let wrap = |e: MenuError| {
+        log_error(&format!("{name}, {e}"));
+        MenuError { line: 0, msg: format!("{name}, {e}") }
     };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            let err = MenuError {
-                line: 0,
-                msg: format!("не удалось прочитать файл: {e}"),
-            };
-            return (MenuSet::single(default_menu()), Some(err));
-        }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| wrap(MenuError { line: 0, msg: format!("не удалось прочитать файл: {e}") }))?;
+    menu_yaml::parse(&text, path.parent(), &assets::exists).map_err(wrap)
+}
+
+/// Меню из файлов: основное (`menu.yaml`) и профили. Ошибка в файле не мешает работать: вместо него
+/// берём меню по умолчанию, а первую ошибку возвращаем, чтобы её показать.
+pub fn load_menu(settings: &Settings) -> (MenuSet, Option<MenuError>) {
+    let mut first_error = None;
+    let mut set = match ensure_menu_file() {
+        Some(path) => read_menu(&path).unwrap_or_else(|e| {
+            first_error = Some(e);
+            MenuSet::single(default_menu())
+        }),
+        None => MenuSet::single(default_menu()),
     };
-    match menu_yaml::parse(&text, path.parent(), &assets::exists) {
-        Ok(m) => (m, None),
-        Err(e) => {
-            log_error(&format!("menu.yaml, {e}"));
-            (MenuSet::single(default_menu()), Some(e))
-        }
+    for cfg in &settings.profiles {
+        let menu = match ensure_profile_file(cfg) {
+            Some(path) => match read_menu(&path) {
+                Ok(m) => m.main,
+                Err(e) => {
+                    first_error.get_or_insert(e);
+                    default_menu()
+                }
+            },
+            None => default_menu(),
+        };
+        set.profiles.push(Profile {
+            name: format!("Профиль {}", cfg.id),
+            trigger: Trigger { button: cfg.button, hotkey: cfg.hotkey },
+            menu,
+        });
     }
+    (set, first_error)
+}
+
+/// Файл меню профиля; если его нет — кладём шаблон («Навигация» для профиля 2, иначе — как у основного).
+pub fn ensure_profile_file(cfg: &ProfileCfg) -> Option<PathBuf> {
+    let p = profile_path(cfg)?;
+    if !p.exists() {
+        write_new(&p, if cfg.id == 2 { menu_yaml::NAV_TEMPLATE } else { menu_yaml::TEMPLATE });
+    }
+    Some(p)
 }
 
 /// Убедиться, что menu.yaml (с описанием формата) и папка icons существуют.

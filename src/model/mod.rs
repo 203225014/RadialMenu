@@ -10,6 +10,6 @@ pub mod theme;
 
 pub use action::{Action, Chord, Media, Run, Step};
 pub use icon::IconRef;
-pub use menu::{default_menu, AppMenu, Context, Flag, Item, Menu, MenuSet, NodeId, Profile, Shape, Trigger, MAX_PROFILES, ROOT};
-pub use settings::Settings;
+pub use menu::{default_menu, AppMenu, Context, Flag, Item, Menu, MenuSet, NodeId, Profile, Shape, Trigger, ROOT};
+pub use settings::{ProfileCfg, Settings, MAX_PROFILES};
 pub use theme::{Theme, ThemeMode};
