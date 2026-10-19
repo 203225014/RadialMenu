@@ -8,7 +8,7 @@ pub mod metrics;
 pub mod nav;
 
 use crate::model::{Action, Context, IconRef, Menu, NodeId, Settings, Theme, ROOT};
-use crate::render::compose::{Canvas, Rect};
+use crate::render::compose::{Canvas, Rect, SectorShape};
 use crate::render::palette as style;
 use crate::render::raster::{self, Bake, PillKind, ProgramIcons, BOX, DIAM, DOT_BOX};
 use anim::{Anim, Scene};
@@ -16,6 +16,9 @@ use geom::ease_back;
 use layout::Layout;
 use metrics::{Metrics, FADE_IN, FADE_OUT, HOVER_GROW, STUCK_T, TOAST_T};
 use nav::Nav;
+
+/// Сторона иконки относительно половины толщины кнопки.
+const ICON_K: f32 = 1.0;
 
 pub const TOAST_UP: &str = "Громкость +";
 pub const TOAST_DOWN: &str = "Громкость −";
@@ -229,18 +232,6 @@ impl Engine {
         }
     }
 
-    fn pos_of(&self, id: NodeId, c: (f32, f32)) -> (f32, f32) {
-        let node = self.menu.node(id);
-        let off = self.layout.slot(id).off;
-        let to = (c.0 + off.0, c.1 + off.1);
-        let from = match node.parent {
-            Some(ROOT) | None => c,
-            Some(p) => self.pos_of(p, c),
-        };
-        let e = ease_back(self.anim.nodes[id].p);
-        (from.0 + (to.0 - from.0) * e, from.1 + (to.1 - from.1) * e)
-    }
-
     fn draw(&self, cv: &mut Canvas, ctx: &Context, now: f64) -> Rect {
         let c = (cv.w as f32 / 2.0, cv.h as f32 / 2.0);
         let (m, bake, s) = (&self.metrics, &self.bake, self.ui_scale);
@@ -280,23 +271,32 @@ impl Engine {
             .collect();
         for &id in &shown {
             let a = &self.anim.nodes[id];
-            let rad = (m.circle_r * (1.0 + HOVER_GROW * a.hv) * ease_back(a.p)).max(0.0);
-            let (x, y) = self.pos_of(id, c);
+            let slot = self.layout.slot(id);
+            // появление: сектор «вырастает» из кольца родителя (основные — из центра) и толстеет
+            let e = ease_back(a.p).max(0.0);
+            let from = match self.menu.node(id).parent {
+                Some(ROOT) | None => slot.arc.r * 0.55,
+                Some(p) => self.layout.slot(p).arc.r,
+            };
+            let r = from + (slot.arc.r - from) * e;
+            let h = (m.h * (1.0 + HOVER_GROW * a.hv) * e).max(0.0);
             let look = style::mix(
                 &a.w.unwrap_or_else(|| style::one_hot(style::DEFAULT)),
                 self.theme,
                 self.menu.node(id).color,
             );
+            let shape = SectorShape {
+                cx: c.0,
+                cy: c.1,
+                r,
+                a0: (slot.arc.theta - slot.arc.span).to_radians(),
+                a1: (slot.arc.theta + slot.arc.span).to_radians(),
+                h,
+            };
+            let t = slot.arc.theta.to_radians();
+            let icon_c = (c.0 + r * t.cos(), c.1 + r * t.sin());
             let icon = bake.icon(self.menu.icon(id, ctx));
-            dirty = dirty.union(cv.button(
-                &bake.button,
-                icon,
-                x,
-                y,
-                to_box * rad,
-                &look,
-                (a.p * 2.5).clamp(0.0, 1.0),
-            ));
+            dirty = dirty.union(cv.sector(&shape, icon, icon_c, h * ICON_K, &look, (a.p * 2.5).clamp(0.0, 1.0)));
         }
 
         // подпись выбранной кнопки — со стороны центра, в промежутке между кнопками
@@ -308,13 +308,12 @@ impl Engine {
             let Some(pill) = bake.pill(&self.menu.label(id, ctx), PillKind::Label, self.theme) else {
                 continue;
             };
-            let (x, y) = self.pos_of(id, c);
-            let rad = m.circle_r * (1.0 + HOVER_GROW * a.hv);
-            let py = if y <= c.1 {
-                y + rad + 6.0 * s
-            } else {
-                y - rad - 6.0 * s - pill.h as f32
-            };
+            // подпись — в пустом поле между центром и первым кольцом, в сторону выбранной кнопки
+            let slot = self.layout.slot(id);
+            let t = slot.arc.theta.to_radians();
+            let rho = (m.hub_r + m.ring(0) - m.h) / 2.0;
+            let (x, y) = (c.0 + rho * t.cos(), c.1 + rho * t.sin());
+            let py = y - pill.h as f32 / 2.0;
             dirty = dirty.union(put_pill(
                 cv,
                 pill,

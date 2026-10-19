@@ -113,7 +113,7 @@ pub struct Shape {
     pub start_angle: f32,
     /// Остальные — по часовой стрелке.
     pub clockwise: bool,
-    /// Угол между пунктами веера, ° (сожмётся, если пунктов много).
+    /// Устарело: веер раскладывается кольцом сам. Поле читается из старых файлов и не используется.
     pub fan_spread: f32,
 }
 
@@ -254,6 +254,17 @@ impl Menu {
             1 + m.children(id).iter().map(|&k| go(m, k)).max().unwrap_or(0)
         }
         go(self, ROOT) - 1
+    }
+
+    /// Номер кольца кнопки: 0 — основные, 1 — веер, 2 — вложенный веер.
+    pub fn level(&self, id: NodeId) -> usize {
+        let mut n = 0;
+        let mut cur = self.nodes[id].parent;
+        while let Some(p) = cur.filter(|&p| p != ROOT) {
+            n += 1;
+            cur = self.nodes[p].parent;
+        }
+        n
     }
 
     /// `id` — раскрытая кнопка или её предок (на пути к самой глубокой раскрытой).

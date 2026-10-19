@@ -1,5 +1,10 @@
-//! Размеры меню в пикселях: базовые значения из макета × масштаб (DPI, настройки),
-//! раздвинутые под число кнопок и вписанные в экран, если он маленький.
+//! Размеры меню в пикселях. Меню — концентрические кольца: в первом основные кнопки-сектора,
+//! в каждом следующем веер кнопки внутреннего кольца. Все размеры заданы в «макетных» px
+//! (100 %), затем умножаются на масштаб (DPI, настройки) и вписываются в экран.
+//!
+//! Макет (от центра): кружок 16, пустое поле, кольцо 124–176 (основные), зазор 32, кольцо
+//! 208–260 (веер), зазор 32, кольцо 292–344 (вложенный веер). Толщина кольца 52, зазор между
+//! соседними кнопками в кольце 16.
 
 use crate::model::{Menu, Settings};
 
@@ -12,49 +17,39 @@ pub const COLOR_T: f64 = 0.07; // сек: сглаживание цвета
 pub const STUCK_T: f64 = 20.0; // сек: предохранитель «меню зависло открытым»
 pub const TOAST_T: f64 = 0.9; // сек: подпись громкости
 
-const MAIN_D: f32 = 117.0; // от центра до основных кнопок (не меньше)
-const FAN_D: f32 = 116.0; // от основной кнопки до кнопок её подменю (не меньше)
-const R_OUT: f32 = 39.0; // дальше main_d + R_OUT выбираются кнопки подменю
-const RMAX: f32 = 51.0; // указатель не уходит дальше main_d + RMAX (подменю закрыто)
-const RMAX_SUB: f32 = 13.0; // … и дальше main_d + fan_d + RMAX_SUB, когда открыто
-const DEAD: f32 = 34.0; // мёртвая зона в центре
-const CIRCLE_R: f32 = 32.0; // радиус кнопки
-const HUB_R: f32 = 17.0; // радиус центральной кнопки
+const H: f32 = 26.0; // половина толщины кольца
+const GAP: f32 = 16.0; // зазор между соседними кнопками одного кольца
+const RING_GAP: f32 = 32.0; // зазор между кольцами
+const R1_MIN: f32 = 150.0; // радиус оси первого кольца (не меньше)
+const HUB_R: f32 = 16.0; // радиус центрального кружка
+const DEAD: f32 = 56.0; // мёртвая зона в центре
 const SENS: f32 = 0.5; // чувствительность мыши внутри меню
 const MARGIN: f32 = 24.0;
-const GAP: f32 = 10.0; // зазор между соседними кнопками
-/// Самый широкий веер, ° (шире — пункты заходят за соседние основные кнопки).
-const FAN_MAX_SPAN: f32 = 150.0;
-/// … и вложенного (шире — пункты залезают на соседей по вееру).
-const SUB_MAX_SPAN: f32 = 60.0;
+const RMAX_PAD: f32 = 12.0; // указатель уходит за край раскрытого кольца не дальше, чем на столько
 
 #[derive(Clone, Copy, Debug)]
 pub struct Metrics {
-    pub main_d: f32,
-    pub fan_d: f32,
-    /// От пункта веера до пунктов его вложенного веера (0, если вложенных нет).
-    pub sub_d: f32,
-    pub r_out: f32,
-    pub rmax: f32,
-    pub rmax_sub: f32,
-    /// … а когда раскрыт вложенный веер.
-    pub rmax_sub2: f32,
+    /// Половина толщины кольца.
+    pub h: f32,
+    /// Зазор между соседними кнопками кольца.
+    pub gap: f32,
+    /// Зазор между кольцами.
+    pub ring_gap: f32,
+    /// Радиус оси первого кольца.
+    pub r1: f32,
+    /// Колец в меню (1 — только основные).
+    pub levels: usize,
     pub dead: f32,
-    pub circle_r: f32,
     pub hub_r: f32,
     pub sens: f32,
-    /// Задержка раскрытия подменю, сек.
+    /// Задержка раскрытия веера, сек.
     pub dwell: f64,
-    /// Угол между пунктами веера, ° (уже с учётом их числа).
-    pub fan_spread: f32,
-    /// То же для вложенных вееров.
-    pub sub_spread: f32,
 }
 
-/// Расстояние до центров, при котором `n` кнопок, стоящих через угол `step`°, не касаются.
-fn spaced(n_step_deg: f32) -> f32 {
-    let chord = 2.0 * CIRCLE_R * (1.0 + HOVER_GROW) + GAP;
-    chord / (2.0 * (n_step_deg.to_radians() / 2.0).sin())
+/// Угол (°), на который смещены центры двух соседних кнопок кольца радиуса `r`, чтобы между
+/// ними остался зазор `gap` (кнопки — полосы толщины 2h с круглыми концами).
+pub fn pitch_deg(r: f32, h: f32, gap: f32) -> f32 {
+    (2.0 * ((2.0 * h + gap) / (2.0 * r)).clamp(0.0, 1.0).asin()).to_degrees()
 }
 
 impl Metrics {
@@ -62,70 +57,64 @@ impl Metrics {
     pub fn new(s: &Settings, ui_scale: f32, screen: (i32, i32), menu: &Menu) -> Metrics {
         let k0 = ui_scale * s.size_percent as f32 / 100.0;
         let top = menu.top().len().max(1);
-        let kids = menu.max_fan();
-        // круг раздвигается, если основных кнопок много
-        let main = if top > 1 { MAIN_D.max(spaced(360.0 / top as f32)) } else { MAIN_D };
-        // веер сжимается до FAN_MAX_SPAN и отодвигается, чтобы пункты не слипались
-        let spread = if kids > 1 {
-            menu.shape.fan_spread.min(FAN_MAX_SPAN / (kids - 1) as f32)
+        // кольцо раздвигается, если основных кнопок много: между центрами соседних — хотя бы 2h+gap
+        let r1 = if top > 1 {
+            R1_MIN.max((2.0 * H + GAP) / (2.0 * (std::f32::consts::PI / top as f32).sin()))
         } else {
-            menu.shape.fan_spread
+            R1_MIN
         };
-        let fan = if kids > 1 { FAN_D.max(spaced(spread)) } else { FAN_D };
-        // вложенный веер не должен задевать соседей по вееру: он узкий (≤ ±30°) и отодвинут
-        let subs = menu.max_sub();
-        let sub_spread = if subs > 1 {
-            menu.shape.fan_spread.min(SUB_MAX_SPAN / (subs - 1) as f32)
-        } else {
-            menu.shape.fan_spread
-        };
-        let sub = if subs == 0 { 0.0 } else if subs > 1 { FAN_D.max(spaced(sub_spread)) } else { FAN_D };
         let mut m = Metrics {
-            main_d: main * k0,
-            fan_d: fan * k0,
-            sub_d: sub * k0,
-            r_out: (main + R_OUT) * k0,
-            rmax: (main + RMAX) * k0,
-            rmax_sub: (main + fan + RMAX_SUB) * k0,
-            rmax_sub2: (main + fan + sub + RMAX_SUB) * k0,
+            h: H * k0,
+            gap: GAP * k0,
+            ring_gap: RING_GAP * k0,
+            r1: r1 * k0,
+            levels: menu.depth().max(1),
             dead: DEAD * k0,
-            circle_r: CIRCLE_R * k0,
             hub_r: HUB_R * k0,
             sens: SENS * ui_scale * s.sens_percent as f32 / 100.0,
             dwell: s.dwell_ms as f64 / 1000.0,
-            fan_spread: spread,
-            sub_spread,
         };
         let small = screen.0.min(screen.1) as f32;
-        let k =
-            ((small / 2.0 - MARGIN) / (m.reach() + m.circle_r * 1.2 + MARGIN)).min(1.0);
+        let k = ((small / 2.0 - MARGIN) / m.reach()).min(1.0);
         if k > 0.0 {
-            for v in [
-                &mut m.main_d,
-                &mut m.fan_d,
-                &mut m.sub_d,
-                &mut m.r_out,
-                &mut m.rmax,
-                &mut m.rmax_sub,
-                &mut m.rmax_sub2,
-                &mut m.dead,
-                &mut m.circle_r,
-                &mut m.hub_r,
-            ] {
+            for v in [&mut m.h, &mut m.gap, &mut m.ring_gap, &mut m.r1, &mut m.dead, &mut m.hub_r] {
                 *v *= k;
             }
         }
         m
     }
 
-    /// От центра до самой дальней кнопки самого глубокого веера.
+    /// Расстояние между осями соседних колец.
+    pub fn step(&self) -> f32 {
+        2.0 * self.h + self.ring_gap
+    }
+
+    /// Радиус оси кольца номер `level` (0 — основные).
+    pub fn ring(&self, level: usize) -> f32 {
+        self.r1 + self.step() * level as f32
+    }
+
+    /// Радиус, с которого выбираются кнопки кольца `level` (≥ 1): середина зазора перед ним.
+    pub fn enter(&self, level: usize) -> f32 {
+        self.ring(level - 1) + self.h + self.ring_gap / 2.0
+    }
+
+    /// Дальше этого радиуса невидимый указатель не уходит; `open` — кольцо раскрытого веера.
+    pub fn limit(&self, open: Option<usize>) -> f32 {
+        match open {
+            None => self.enter(1) + RMAX_PAD,
+            Some(level) => self.ring(level) + self.h + RMAX_PAD,
+        }
+    }
+
+    /// От центра до внешнего края самого дальнего кольца (с запасом на рост при наведении).
     pub fn reach(&self) -> f32 {
-        self.main_d + self.fan_d + self.sub_d
+        self.ring(self.levels - 1) + self.h * (1.0 + HOVER_GROW)
     }
 
     /// Половина стороны окна меню (окно — квадрат вокруг центра).
     pub fn half(&self) -> i32 {
-        (self.reach() + self.circle_r * (1.0 + HOVER_GROW) * 1.2 + MARGIN) as i32
+        (self.reach() + MARGIN) as i32
     }
 
     /// Размер окна, достаточный для меню без вписывания в экран.
@@ -152,31 +141,48 @@ mod tests {
     }
 
     #[test]
-    fn matches_original_at_100() {
+    fn rings_follow_the_layout_sketch() {
         let m = Metrics::new(&Settings::default(), 1.0, (1920, 1080), &default_menu());
-        assert_eq!(m.half(), (117.0 + 116.0 + 32.0 * 1.08 * 1.2 + 24.0) as i32);
+        // кольца 124–176 и 208–260 (макет), толщина 52, зазор 32
+        assert!((m.ring(0) - m.h - 124.0).abs() < 1e-3 && (m.ring(0) + m.h - 176.0).abs() < 1e-3);
+        assert!((m.ring(1) - m.h - 208.0).abs() < 1e-3 && (m.ring(1) + m.h - 260.0).abs() < 1e-3);
+        assert!((m.enter(1) - 192.0).abs() < 1e-3); // середина зазора между 176 и 208
         assert!((m.sens - 0.5).abs() < 1e-6);
-        assert!((m.r_out - 156.0).abs() < 1e-3 && (m.rmax_sub - 246.0).abs() < 1e-3);
+        assert_eq!(m.levels, 2);
+        assert_eq!(m.half(), (260.0 + 2.0 * 26.0 * 0.04 + 24.0) as i32);
     }
 
     #[test]
-    fn shrinks_on_small_screen_and_window_fits() {
-        let s = Settings::default();
-        let small = Metrics::new(&s, 1.0, (500, 400), &default_menu());
-        let big = Metrics::new(&s, 1.0, (1920, 1080), &default_menu());
-        assert!(small.main_d < big.main_d);
-        assert!(small.half() <= Metrics::window_half(&s, 1.0, &default_menu()));
+    fn pitch_keeps_the_gap() {
+        // центры двух кнопок, разведённые на pitch, отстоят на 2h + gap — между краями ровно gap
+        let (r, h, gap) = (150.0f32, 26.0, 16.0);
+        let a = pitch_deg(r, h, gap).to_radians();
+        let chord = 2.0 * r * (a / 2.0).sin();
+        assert!((chord - (2.0 * h + gap)).abs() < 1e-3);
     }
 
     #[test]
-    fn ring_and_fan_grow_with_count() {
-        let s = Settings::default();
-        let few = Metrics::new(&s, 1.0, (4000, 4000), &menu(4, 3));
-        let many = Metrics::new(&s, 1.0, (4000, 4000), &menu(12, 6));
-        assert!(many.main_d > few.main_d && many.fan_d > few.fan_d);
-        assert!(many.fan_spread * 5.0 <= FAN_MAX_SPAN + 1e-3);
-        // соседние основные кнопки не касаются
-        let chord = 2.0 * many.main_d * (std::f32::consts::PI / 12.0).sin();
-        assert!(chord >= 2.0 * many.circle_r * (1.0 + HOVER_GROW));
+    fn scales_with_ui_and_fits_small_screens() {
+        let big = Metrics::new(&Settings::default(), 2.0, (3840, 2160), &default_menu());
+        let one = Metrics::new(&Settings::default(), 1.0, (3840, 2160), &default_menu());
+        assert!((big.h - 2.0 * one.h).abs() < 1e-3 && (big.ring(1) - 2.0 * one.ring(1)).abs() < 1e-3);
+        let tiny = Metrics::new(&Settings::default(), 1.0, (500, 400), &default_menu());
+        assert!(tiny.half() as f32 <= 200.0 + 1.0, "{}", tiny.half());
+    }
+
+    #[test]
+    fn many_buttons_spread_the_ring() {
+        let few = Metrics::new(&Settings::default(), 1.0, (1920, 1080), &menu(4, 1));
+        let many = Metrics::new(&Settings::default(), 1.0, (1920, 1080), &menu(12, 1));
+        assert!(many.r1 >= few.r1);
+        // у 12 кнопок между осями соседних хотя бы 2h + gap
+        let chord = 2.0 * many.r1 * (std::f32::consts::PI / 12.0).sin();
+        assert!(chord >= 2.0 * many.h + many.gap - 1e-3);
+    }
+
+    #[test]
+    fn limits_grow_with_open_rings() {
+        let m = Metrics::new(&Settings::default(), 1.0, (1920, 1080), &menu(4, 2));
+        assert!(m.limit(None) > m.enter(1) && m.limit(Some(1)) > m.limit(None));
     }
 }

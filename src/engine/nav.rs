@@ -28,11 +28,7 @@ impl Nav {
         self.px += delta.0 * m.sens;
         self.py += delta.1 * m.sens;
         let (mut r, phi) = polar(self.px, self.py);
-        let rmax = match self.open {
-            None => m.rmax,
-            Some(o) if menu.node(o).parent == Some(ROOT) => m.rmax_sub,
-            Some(_) => m.rmax_sub2,
-        };
+        let rmax = m.limit(self.open.map(|o| menu.level(o) + 1));
         if r > rmax {
             // указатель (невидимый) не уходит дальше края меню
             let k = rmax / r;
@@ -60,7 +56,7 @@ impl Nav {
                 }
                 // если уже стоим на пункте этого веера — порог выхода из него ниже
                 let keep = self.hot.is_some_and(|h| menu.node(h).parent == Some(cur));
-                if r <= m.r_out + level as f32 * m.fan_d - if keep { HYST } else { 0.0 } {
+                if r <= m.enter(level + 1) - if keep { HYST } else { 0.0 } {
                     break;
                 }
                 // ближайший по углу пункт; зазоры между секторами не считаются «пустотой»
@@ -171,7 +167,7 @@ mod tests {
         let kid = r.menu.children(top)[0]; // самый левый
         let (ox, oy) = r.lay.slot(kid).off;
         let ang = oy.atan2(ox);
-        let rr = r.m.r_out + 20.0;
+        let rr = r.m.enter(1) + 20.0;
         r.put(rr * ang.cos(), rr * ang.sin(), 0.1);
         assert_eq!(r.nav.hot, Some(kid));
     }
@@ -185,15 +181,15 @@ mod tests {
         let (ox, oy) = r.lay.slot(kid).off;
         let ang = oy.atan2(ox);
         r.put(
-            (r.m.r_out + 10.0) * ang.cos(),
-            (r.m.r_out + 10.0) * ang.sin(),
+            (r.m.enter(1) + 10.0) * ang.cos(),
+            (r.m.enter(1) + 10.0) * ang.sin(),
             0.1,
         );
         assert_eq!(r.nav.hot, Some(kid));
-        let inner = r.m.r_out - HYST / 2.0; // внутри порога входа, но в зоне гистерезиса
+        let inner = r.m.enter(1) - HYST / 2.0; // внутри порога входа, но в зоне гистерезиса
         r.put(inner * ang.cos(), inner * ang.sin(), 0.2);
         assert_eq!(r.nav.hot, Some(kid));
-        let out = r.m.r_out - HYST - 5.0;
+        let out = r.m.enter(1) - HYST - 5.0;
         r.put(out * ang.cos(), out * ang.sin(), 0.3);
         assert_eq!(r.nav.hot, Some(top));
     }
@@ -202,7 +198,7 @@ mod tests {
     fn pointer_is_clamped() {
         let mut r = rig();
         r.nav.update(&r.menu, &r.lay, &r.m, (10_000.0, 0.0), 0.0);
-        assert!((r.nav.px - r.m.rmax).abs() < 1e-3);
+        assert!((r.nav.px - r.m.limit(None)).abs() < 1e-3);
     }
 
     #[test]
