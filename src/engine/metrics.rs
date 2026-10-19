@@ -75,7 +75,7 @@ impl Metrics {
             dwell: s.dwell_ms as f64 / 1000.0,
         };
         let small = screen.0.min(screen.1) as f32;
-        let k = ((small / 2.0 - MARGIN) / m.reach()).min(1.0);
+        let k = ((small / 2.0 - MARGIN) / m.extent()).min(1.0);
         if k > 0.0 {
             for v in [&mut m.h, &mut m.gap, &mut m.ring_gap, &mut m.r1, &mut m.dead, &mut m.hub_r] {
                 *v *= k;
@@ -107,14 +107,25 @@ impl Metrics {
         }
     }
 
+    /// Внешний край кольца веера плеера (первый веер; без вееров — основного кольца): ниже него
+    /// карточка трека ничему не мешает и стоит на месте.
+    pub fn card_edge(&self) -> f32 {
+        self.ring(1.min(self.levels - 1)) + self.h
+    }
+
     /// От центра до внешнего края самого дальнего кольца (с запасом на рост при наведении).
     pub fn reach(&self) -> f32 {
         self.ring(self.levels - 1) + self.h * (1.0 + HOVER_GROW)
     }
 
+    /// Дальний край того, что рисуется: кольца или (внизу) карточка трека — отступ 14 и высота 54 при h = 26.
+    fn extent(&self) -> f32 {
+        self.reach().max(self.card_edge() + self.h * (68.0 / H))
+    }
+
     /// Половина стороны окна меню (окно — квадрат вокруг центра).
     pub fn half(&self) -> i32 {
-        (self.reach() + MARGIN) as i32
+        (self.extent() + MARGIN) as i32
     }
 
     /// Размер окна, достаточный для меню без вписывания в экран.
@@ -149,7 +160,7 @@ mod tests {
         assert!((m.enter(1) - 192.0).abs() < 1e-3); // середина зазора между 176 и 208
         assert!((m.sens - 0.5).abs() < 1e-6);
         assert_eq!(m.levels, 2);
-        assert_eq!(m.half(), (260.0 + 2.0 * 26.0 * 0.04 + 24.0) as i32);
+        assert_eq!(m.half(), (260.0 + 68.0 + 24.0) as i32); // с местом под карточку трека
     }
 
     #[test]

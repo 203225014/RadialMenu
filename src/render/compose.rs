@@ -55,12 +55,28 @@ pub struct Canvas<'a> {
     pub h: usize,
     /// BGRA, предумноженная альфа, `w*h*4` байт.
     pub px: &'a mut [u8],
+    /// Размытый снимок экрана под окном (BGRA, `w*h*4`): кнопки и плашки кладутся на него, как стекло.
+    backdrop: Option<&'a [u8]>,
 }
 
 impl<'a> Canvas<'a> {
     pub fn new(w: usize, h: usize, px: &'a mut [u8]) -> Canvas<'a> {
         assert!(px.len() >= w * h * 4, "буфер меньше холста");
-        Canvas { w, h, px }
+        Canvas { w, h, px, backdrop: None }
+    }
+
+    /// Подложить размытый снимок экрана под полупрозрачные элементы.
+    pub fn with_backdrop(mut self, backdrop: Option<&'a [u8]>) -> Canvas<'a> {
+        self.backdrop = backdrop.filter(|b| b.len() >= self.w * self.h * 4);
+        self
+    }
+
+    /// Пиксель снимка под (x, y) как предумноженный RGB 0..1 (оттенки серого — если снимка нет).
+    #[inline]
+    fn glass(&self, x: i32, y: i32) -> Option<[f32; 3]> {
+        let b = self.backdrop?;
+        let o = (y as usize * self.w + x as usize) * 4;
+        Some([b[o + 2] as f32 / 255.0, b[o + 1] as f32 / 255.0, b[o] as f32 / 255.0])
     }
 
     pub fn bounds(&self) -> Rect {
@@ -181,6 +197,13 @@ impl<'a> Canvas<'a> {
                     continue;
                 }
                 let cov = (0.5 - sd).clamp(0.0, 1.0);
+                if cov > 0.0 {
+                    // стекло: под полупрозрачной заливкой — размытое содержимое экрана
+                    if let Some(g) = self.glass(x, y) {
+                        let a = cov * alpha;
+                        self.over(x, y, [g[0] * a, g[1] * a, g[2] * a], a);
+                    }
+                }
                 let ring = (cov - (0.5 - sd - 1.0).clamp(0.0, 1.0)).max(0.0);
                 // мягкая тень снаружи: гауссов спад σ=4 в виде логистической кривой
                 let shadow = SHADOW_A / (1.0 + (SHADOW_K * sd).exp()) * (1.0 - cov);
@@ -240,6 +263,22 @@ impl<'a> Canvas<'a> {
     }
 
     /// Картинка 1:1 в целых координатах (плашки).
+    /// Как `image`, но под полупрозрачными пикселями — размытый снимок экрана (если он есть).
+    pub fn image_glass(&mut self, img: &Rgba, x: i32, y: i32, alpha: f32) -> Rect {
+        if self.backdrop.is_some() {
+            let r = Rect { x0: x, y0: y, x1: x + img.w as i32, y1: y + img.h as i32 }.clip(self.w, self.h);
+            for py in r.y0..r.y1 {
+                for px in r.x0..r.x1 {
+                    let a = img.data[((py - y) as usize * img.w + (px - x) as usize) * 4 + 3] as f32 / 255.0 * (alpha / 255.0);
+                    if let (true, Some(g)) = (a > 0.0, self.glass(px, py)) {
+                        self.over(px, py, [g[0] * a, g[1] * a, g[2] * a], a);
+                    }
+                }
+            }
+        }
+        self.image(img, x, y, alpha)
+    }
+
     pub fn image(&mut self, img: &Rgba, x: i32, y: i32, alpha: f32) -> Rect {
         let r = Rect {
             x0: x,
@@ -538,6 +577,24 @@ mod tests {
         assert_eq!(a(10, 10), 0);
         // за краем полосы только мягкая тень, не заливка
         assert!(a(178, 100) < 80);
+    }
+
+    #[test]
+    fn glass_shows_the_backdrop_only_under_shapes() {
+        let (w, h) = (200usize, 200usize);
+        let white = vec![255u8; w * h * 4];
+        let look = palette::mix(&palette::one_hot(DEFAULT), Theme::Dark, None);
+        let paint = |backdrop: Option<&[u8]>| {
+            let mut buf = vec![0u8; w * h * 4];
+            let mut cv = Canvas::new(w, h, &mut buf).with_backdrop(backdrop);
+            cv.sector(&arc(), None, (160.0, 100.0), 20.0, &look, 1.0);
+            buf
+        };
+        let (plain, glass) = (paint(None), paint(Some(&white)));
+        let at = |b: &[u8], x: usize, y: usize| b[(y * w + x) * 4..(y * w + x) * 4 + 4].to_vec();
+        assert!(at(&glass, 160, 100)[0] > at(&plain, 160, 100)[0], "под заливкой виден снимок");
+        assert_eq!(at(&glass, 100, 100), at(&plain, 100, 100), "вне кнопки снимка нет");
+        assert!(at(&glass, 160, 100)[3] > 150);
     }
 
     #[test]

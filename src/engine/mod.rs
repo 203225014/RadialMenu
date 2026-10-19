@@ -145,12 +145,6 @@ impl Engine {
         self.track_cards = Theme::ALL.iter().map(|&th| (th, raster::track_card(font, &fit, th, s))).collect();
     }
 
-    /// Угол кнопки плеера на основном кольце (градусы, ось y вниз).
-    fn media_theta(&self) -> Option<f32> {
-        let id = self.menu.top().iter().copied().find(|&i| self.menu.is_media_group(i))?;
-        Some(self.layout.slot(id).arc.theta)
-    }
-
     pub fn menu(&self) -> &Menu {
         &self.menu
     }
@@ -386,13 +380,10 @@ impl Engine {
                 }
             }
         }
-        // что сейчас играет — карточка снаружи основного кольца, на стороне, противоположной кнопке плеера:
-        // веер раскрыт у самой кнопки, поэтому здесь он карточке не мешает и она стоит на месте
+        // что сейчас играет — карточка под кольцом веера (где раскрывается плеер), всегда на одном месте
         if self.track_a > 0.02 {
             if let Some((_, card)) = self.track_cards.iter().find(|(t, _)| *t == self.theme) {
-                let up = self.media_theta().is_some_and(|t| t.to_radians().sin() > 0.0);
-                let edge = m.ring(0) + m.h + 14.0 * s;
-                let y = if up { c.1 - edge - card.h as f32 } else { c.1 + edge };
+                let y = c.1 + m.card_edge() + 14.0 * s;
                 dirty = dirty.union(put_pill(cv, card, c.0 - card.w as f32 / 2.0, y, self.track_a.min(1.0)));
             }
         }
@@ -419,7 +410,7 @@ fn fit_text(font: &fontdue::Font, text: &str, px: f32, max_w: f32) -> String {
 fn put_pill(cv: &mut Canvas, pill: &raster::Rgba, x: f32, y: f32, alpha: f32) -> Rect {
     let px = x.clamp(2.0, (cv.w as f32 - pill.w as f32 - 2.0).max(2.0));
     let py = y.clamp(2.0, (cv.h as f32 - pill.h as f32 - 2.0).max(2.0));
-    cv.image(pill, px as i32, py as i32, alpha)
+    cv.image_glass(pill, px as i32, py as i32, alpha)
 }
 
 #[cfg(test)]
@@ -459,11 +450,7 @@ mod tests {
     fn idle_engine_does_nothing() {
         let mut e = engine();
         let mut buf = vec![0u8; 16];
-        let mut cv = Canvas {
-            w: 2,
-            h: 2,
-            px: &mut buf,
-        };
+        let mut cv = Canvas::new(2, 2, &mut buf);
         let f = e.frame(1.0, (0.0, 0.0), &Context::default(), &mut cv);
         assert!(!f.visible && f.dirty.is_empty() && !e.is_busy());
     }
@@ -610,12 +597,11 @@ mod tests {
             e.press(0.0);
             let len = toward.0.hypot(toward.1).max(1.0);
             run(&mut e, &mut cv, 0.0, 0.8, (toward.0 / len * 6.0, toward.1 / len * 6.0));
-            // карточка — снаружи основного кольца, со стороны, противоположной кнопке плеера
+            // карточка — под кольцом веера
             let m = e.metrics;
             let (cx, cy) = (n as f32 / 2.0, n as f32 / 2.0);
-            let up = e.media_theta().is_some_and(|t| t.to_radians().sin() > 0.0);
-            let edge = m.ring(0) + m.h + 14.0;
-            let (y0, y1) = if up { (cy - edge - 54.0, cy - edge) } else { (cy + edge, cy + edge + 54.0) };
+            let edge = m.card_edge() + 14.0;
+            let (y0, y1) = (cy + edge, cy + edge + 54.0);
             (y0 as usize..y1 as usize)
                 .flat_map(|y| (cx as usize - 100..cx as usize + 100).map(move |x| (x, y)))
                 .filter(|&(x, y)| buf[(y * n + x) * 4 + 3] > 120)

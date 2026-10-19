@@ -2,6 +2,7 @@
 //! и рисование окон. Чистый код без ОС — кадры и окна можно проверить в PNG.
 
 pub mod assets;
+pub mod blur;
 pub mod compose;
 pub mod painter;
 pub mod palette;

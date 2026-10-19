@@ -6,7 +6,7 @@ use std::ffi::c_void;
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, AC_SRC_ALPHA,
+    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject, AC_SRC_ALPHA, SRCCOPY,
     AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -171,6 +171,45 @@ impl Layer {
                 prcDirty: &rc,
             };
             let _ = UpdateLayeredWindowIndirect(self.hwnd, &info);
+        }
+    }
+
+    /// Снимок экрана под окном (BGRA, `size*size*4`), размытый — «стекло» под кнопками. Зовётся до показа
+    /// окна, иначе в снимок попало бы само меню. `None`, если снять не удалось.
+    pub fn backdrop(&self, radius: usize) -> Option<Vec<u8>> {
+        let n = self.size;
+        unsafe {
+            let screen = GetDC(None);
+            let dc = CreateCompatibleDC(Some(screen));
+            let bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: n,
+                    biHeight: -n,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits: *mut c_void = std::ptr::null_mut();
+            let out = match CreateDIBSection(Some(dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+                Ok(bmp) if !bits.is_null() => {
+                    let old = SelectObject(dc, bmp.into());
+                    let ok = BitBlt(dc, 0, 0, n, n, Some(screen), self.pos.0, self.pos.1, SRCCOPY).is_ok();
+                    let px = ok.then(|| std::slice::from_raw_parts(bits as *const u8, (n * n * 4) as usize).to_vec());
+                    SelectObject(dc, old);
+                    let _ = DeleteObject(bmp.into());
+                    px
+                }
+                _ => None,
+            };
+            let _ = DeleteDC(dc);
+            ReleaseDC(None, screen);
+            let mut px = out?;
+            crate::render::blur::box_blur(&mut px, n as usize, n as usize, radius, 2);
+            Some(px)
         }
     }
 

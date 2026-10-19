@@ -47,6 +47,9 @@ use crate::ui::settings_form::Status;
 
 const NIN_BALLOONUSERCLICK: u32 = 0x0405;
 
+/// Радиус размытия «стекла» под кнопками, px (минимальный: контуры фона угадываются).
+const BLUR_RADIUS: usize = 5;
+
 const TIMER_ACTION: usize = 1;
 const TIMER_STEPS: usize = 2;
 const ACTION_DELAY_MS: u32 = 30; // дать меню погаснуть и фокусу вернуться к окну под ним
@@ -74,6 +77,8 @@ struct App {
     steps: std::collections::VecDeque<Step>,
     paused: bool,
     layer_moved: bool,
+    /// Размытый снимок экрана под меню, пока оно открыто.
+    backdrop: Option<Vec<u8>>,
 }
 
 impl App {
@@ -324,7 +329,7 @@ fn tick() {
         let n = app.layer.size() as usize;
         let frame = {
             let engine = &mut app.engines[app.active];
-            let mut cv = Canvas::new(n, n, app.layer.pixels());
+            let mut cv = Canvas::new(n, n, app.layer.pixels()).with_backdrop(app.backdrop.as_deref());
             engine.frame(now, (dx as f32, dy as f32), &ctx, &mut cv)
         };
         if frame.visible {
@@ -336,6 +341,7 @@ fn tick() {
             app.layer.show();
         } else {
             app.layer.hide();
+            app.backdrop = None;
             stop_timer(app);
             app.audio.release();
             media::set_wanted(false);
@@ -360,6 +366,7 @@ fn on_down() {
         app.layer.move_to(mx + (mw - size) / 2, my + (mh - size) / 2);
         app.layer_moved = true;
         app.layer.clear();
+        app.backdrop = app.layer.backdrop(BLUR_RADIUS); // до показа окна: иначе снимется само меню
         hook::discard_motion(); // сдвиги до показа не в счёт
         app.engine().press(now);
         if app.engines[app.active].menu().uses(Flag::Media) {
@@ -595,6 +602,7 @@ fn setup() -> Result<HWND, String> {
                 steps: Default::default(),
                 paused: false,
                 layer_moved: true,
+                backdrop: None,
             })
         });
         tray::add(hwnd, TIP);
