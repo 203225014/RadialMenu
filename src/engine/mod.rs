@@ -383,7 +383,7 @@ impl Engine {
         // что сейчас играет — карточка под кольцом веера (где раскрывается плеер), всегда на одном месте
         if self.track_a > 0.02 {
             if let Some((_, card)) = self.track_cards.iter().find(|(t, _)| *t == self.theme) {
-                let y = c.1 + m.card_edge() + 14.0 * s;
+                let y = c.1 + m.card_edge() + m.ring_gap;
                 dirty = dirty.union(put_pill(cv, card, c.0 - card.w as f32 / 2.0, y, self.track_a.min(1.0)));
             }
         }
@@ -600,7 +600,7 @@ mod tests {
             // карточка — под кольцом веера
             let m = e.metrics;
             let (cx, cy) = (n as f32 / 2.0, n as f32 / 2.0);
-            let edge = m.card_edge() + 14.0;
+            let edge = m.card_edge() + m.ring_gap;
             let (y0, y1) = (cy + edge, cy + edge + 54.0);
             (y0 as usize..y1 as usize)
                 .flat_map(|y| (cx as usize - 100..cx as usize + 100).map(move |x| (x, y)))
