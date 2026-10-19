@@ -18,7 +18,7 @@ use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowTextLengthW,
     GetWindowTextW, IsWindow, LoadCursorW, PostMessageW, RegisterClassW, SendMessageW,
-    SetTimer, SetWindowTextW, ShowWindow, ES_AUTOHSCROLL, HTCAPTION, IDC_ARROW, SW_SHOW, WINDOW_EX_STYLE,
+    SetTimer, SetWindowTextW, ShowWindow, ES_AUTOHSCROLL, HTCAPTION, IDC_ARROW, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCLBUTTONDOWN,
     WM_PAINT, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_POPUP,
@@ -38,6 +38,7 @@ use crate::platform::win32::system::{dialogs, files};
 use crate::platform::win32::updater::{self, Mode};
 use crate::render::painter::Painter;
 use crate::render::palette;
+use crate::model::NAME_MAX;
 use crate::ui::settings_form::{Cmd, Fonts, Key, SettingsForm, Status};
 
 /// Что делать по «Сохранить»: применить и записать (ошибка — показать в окне).
@@ -49,11 +50,16 @@ pub type OnPreview = fn(Option<ThemeMode>);
 const WM_SET_KEY: u32 = WM_APP + 30;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const EN_CHANGE: u32 = 0x0300;
+const EM_LIMITTEXT: u32 = 0x00C5;
 const TIMER_UPDATE: usize = 7;
 
 struct Win {
     hwnd: isize,
     edit: isize,
+    /// Поле названия меню (видно, только когда выбрано не основное меню).
+    name_edit: isize,
+    /// Для какой вкладки в поле сейчас лежит название.
+    name_tab: usize,
     form: SettingsForm,
     fonts: Fonts,
     on_save: OnSave,
@@ -123,6 +129,7 @@ pub fn refresh_theme() {
         unsafe {
             let _ = InvalidateRect(Some(h(hw)), None, false);
             let _ = InvalidateRect(Some(h(with(|w| w.edit).unwrap_or(0))), None, true);
+            let _ = InvalidateRect(Some(h(with(|w| w.name_edit).unwrap_or(0))), None, true);
         }
     }
 }
@@ -194,12 +201,34 @@ unsafe fn create(form: SettingsForm, fonts: Fonts, on_save: OnSave, on_preview: 
     SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
     let _ = SetWindowSubclass(edit, Some(edit_proc), 1, 0);
 
+    // поле названия меню: то же оформление; у основного меню скрыто
+    let nr = form.name_edit_area();
+    let name_edit = CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        w!("EDIT"),
+        w!(""),
+        WS_CHILD | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+        nr.x.round() as i32,
+        nr.y.round() as i32,
+        nr.w.round() as i32,
+        nr.h.round() as i32,
+        Some(hwnd),
+        None,
+        Some(hinst.into()),
+        None,
+    )?;
+    SendMessageW(name_edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+    SendMessageW(name_edit, EM_LIMITTEXT, Some(WPARAM(NAME_MAX)), Some(LPARAM(0)));
+    let _ = SetWindowSubclass(name_edit, Some(edit_proc), 2, 0);
+
     let theme = theme_of(&form);
     let theme_mode = form.draft.theme;
     WIN.with(|s| {
         s.set(Win {
             hwnd: hwnd.0 as isize,
             edit: edit.0 as isize,
+            name_edit: name_edit.0 as isize,
+            name_tab: 0,
             form,
             fonts,
             on_save,
@@ -287,15 +316,42 @@ fn sync_update(hwnd: HWND) {
     }
 }
 
-/// Исполнить команду формы — уже вне `with`: тут бывают диалоги и синхронные сообщения.
+/// Поле названия показывает название выбранного меню (или прячется у основного).
+unsafe fn sync_name_edit() {
+    let Some((edit, tab, name)) = with(|w| (w.name_edit, w.form.selected, w.form.selected_name().map(str::to_owned))) else {
+        return;
+    };
+    if with(|w| std::mem::replace(&mut w.name_tab, tab)) == Some(tab) {
+        return; // вкладка та же — текст правит сам пользователь
+    }
+    match name {
+        Some(n) => {
+            let t = wide(&n);
+            let _ = SetWindowTextW(h(edit), pcwstr(&t));
+            let _ = ShowWindow(h(edit), SW_SHOW);
+        }
+        None => {
+            let _ = ShowWindow(h(edit), SW_HIDE);
+        }
+    }
+}
+
+/// Исполнить команду формы и привести в порядок поле названия (вкладка могла смениться).
 unsafe fn run(hwnd: HWND, cmd: Cmd) {
+    run_cmd(hwnd, cmd);
+    sync_name_edit();
+}
+
+/// Исполнить команду формы — уже вне `with`: тут бывают диалоги и синхронные сообщения.
+unsafe fn run_cmd(hwnd: HWND, cmd: Cmd) {
     match cmd {
         Cmd::None => {}
         Cmd::Redraw => {
             let _ = InvalidateRect(Some(hwnd), None, false);
             // поле ввода тоже перекрасить: могли сменить тему
-            if let Some(e) = with(|w| w.edit) {
-                let _ = InvalidateRect(Some(h(e)), None, true);
+            if let Some(e) = with(|w| (w.edit, w.name_edit)) {
+                let _ = InvalidateRect(Some(h(e.0)), None, true);
+                let _ = InvalidateRect(Some(h(e.1)), None, true);
             }
         }
         Cmd::Close => {
@@ -336,7 +392,7 @@ unsafe fn run(hwnd: HWND, cmd: Cmd) {
         Cmd::OpenMenuFile(id) => {
             let path = match id {
                 0 => files::ensure_menu_file(),
-                id => with(|w| w.form.draft.profiles.iter().find(|p| p.id == id).copied())
+                id => with(|w| w.form.draft.profiles.iter().find(|p| p.id == id).cloned())
                     .flatten()
                     .and_then(|p| files::ensure_profile_file(&p)),
             };
@@ -499,8 +555,14 @@ unsafe extern "system" fn win_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_COMMAND => {
             if ((wparam.0 >> 16) & 0xFFFF) as u32 == EN_CHANGE {
-                if let Some(e) = with(|w| w.edit) {
-                    let text = edit_text(h(e));
+                let from = lparam.0;
+                let (vault, name) = with(|w| (w.edit, w.name_edit)).unwrap_or((0, 0));
+                if from == name {
+                    let text = edit_text(h(name));
+                    with(|w| w.form.set_name(&text));
+                    let _ = InvalidateRect(Some(hwnd), None, false); // подпись вкладки
+                } else if from == vault {
+                    let text = edit_text(h(vault));
                     with(|w| w.form.set_vault(&text));
                 }
             }

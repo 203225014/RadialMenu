@@ -5,19 +5,40 @@ use super::theme::ThemeMode;
 
 /// Дополнительное меню (профиль) со своей кнопкой мыши и/или сочетанием; состав — в файле
 /// `menu-{id}.yaml` рядом с `menu.yaml`. Основное меню — это `button`/`hotkey` настроек.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ProfileCfg {
     /// 2..=4: по нему называется файл меню и ключи в config.txt.
     pub id: u8,
     /// 0 — мышь не используется, 1 — «назад», 2 — «вперёд».
     pub button: u8,
     pub hotkey: Option<Chord>,
+    /// Название вкладки («Дополнительное», «Мое меню 1»…); переименовывается в «Настройках».
+    pub name: String,
 }
 
+/// Самое длинное название меню, символов.
+pub const NAME_MAX: usize = 24;
+
 impl ProfileCfg {
+    /// Меню с названием по умолчанию: «Дополнительное» для первого, дальше «Мое меню 1», «Мое меню 2».
+    pub fn new(id: u8, button: u8) -> ProfileCfg {
+        ProfileCfg { id, button, hotkey: None, name: Self::default_name(id) }
+    }
+
+    pub fn default_name(id: u8) -> String {
+        if id == 2 { "Дополнительное".to_string() } else { format!("Мое меню {}", id.saturating_sub(2)) }
+    }
+
     pub fn file_name(&self) -> String {
         format!("menu-{}.yaml", self.id)
     }
+}
+
+/// Название меню без лишнего: пробелы по краям, переводы строк, длина; пусто — `None`.
+pub fn clean_name(s: &str) -> Option<String> {
+    let t: String = s.chars().filter(|c| !c.is_control()).take(NAME_MAX).collect();
+    let t = t.trim().to_string();
+    (!t.is_empty()).then_some(t)
 }
 
 /// Сколько профилей, кроме основного меню, можно завести.
@@ -62,7 +83,7 @@ impl Default for Settings {
             theme: ThemeMode::Auto,
             check_updates: true,
             // навигация жестами на боковую «вперёд» (меню — в menu-2.yaml)
-            profiles: vec![ProfileCfg { id: 2, button: 2, hotkey: None }],
+            profiles: vec![ProfileCfg::new(2, 2)],
         }
     }
 }
@@ -70,7 +91,9 @@ impl Default for Settings {
 impl Settings {
     pub fn parse(text: &str) -> Settings {
         let mut s = Settings::default();
-        s.profiles.clear(); // в файле настроек профили перечислены явно; нет строк — нет профилей
+        // меню перечисляются в файле явно; в файле старой версии их нет вовсе — тогда остаётся «Дополнительное»
+        let mut explicit = false;
+        s.profiles.clear();
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -95,15 +118,17 @@ impl Settings {
                         _ => s.check_updates,
                     }
                 }
+                "profiles" => explicit = true,
                 _ => {
                     if let Some((id, field)) = k.strip_prefix("profile").and_then(|r| {
                         let (num, field) = r.split_once('_').unwrap_or((r, ""));
                         Some((num.parse::<u8>().ok().filter(|n| PROFILE_IDS.contains(n))?, field))
                     }) {
+                        explicit = true;
                         let at = match s.profiles.iter().position(|p| p.id == id) {
                             Some(i) => i,
                             None => {
-                                s.profiles.push(ProfileCfg { id, button: 0, hotkey: None });
+                                s.profiles.push(ProfileCfg { id, button: 0, hotkey: None, name: ProfileCfg::default_name(id) });
                                 s.profiles.len() - 1
                             }
                         };
@@ -111,17 +136,24 @@ impl Settings {
                         match field {
                             "button" => p.button = v.parse().unwrap_or(0),
                             "hotkey" => p.hotkey = Chord::parse(v).ok(),
+                            "name" => p.name = clean_name(v).unwrap_or_else(|| ProfileCfg::default_name(id)),
                             _ => {}
                         }
                     }
                 }
             }
         }
+        if !explicit {
+            s.profiles = Settings::default().profiles;
+        }
         s.normalize();
         s
     }
 
     pub fn normalize(&mut self) {
+        for p in &mut self.profiles {
+            p.name = clean_name(&p.name).unwrap_or_else(|| ProfileCfg::default_name(p.id));
+        }
         if self.button > 2 {
             self.button = 1;
         }
@@ -174,13 +206,16 @@ impl Settings {
             .iter()
             .map(|p| {
                 format!(
-                    "# профиль {id}: своё меню (menu-{id}.yaml) на другой кнопке и/или сочетании\nprofile{id} = 1\nprofile{id}_button = {}\nprofile{id}_hotkey = {}\n",
+                    "# меню «{name}» (файл menu-{id}.yaml) на другой кнопке и/или сочетании\nprofile{id} = 1\nprofile{id}_name = {name}\nprofile{id}_button = {}\nprofile{id}_hotkey = {}\n",
                     p.button,
                     p.hotkey.map(|c| c.to_text()).unwrap_or_default(),
-                    id = p.id
+                    id = p.id,
+                    name = p.name
                 )
             })
-            .collect()
+            .collect::<String>()
+            // сколько дополнительных меню (0 — все убраны намеренно; нет строки — старый файл)
+            + &format!("profiles = {}\n", self.profiles.len())
     }
 
     pub fn to_text(&self) -> String {
@@ -274,12 +309,14 @@ mod tests {
     #[test]
     fn profiles_round_trip_and_default_to_navigation() {
         let d = Settings::default();
-        assert_eq!(d.profiles, vec![ProfileCfg { id: 2, button: 2, hotkey: None }]);
-        assert!(Settings::parse("").profiles.is_empty(), "старый файл без профилей остаётся без них");
+        assert_eq!(d.profiles, vec![ProfileCfg::new(2, 2)]);
+        assert_eq!(d.profiles[0].name, "Дополнительное");
+        assert_eq!(Settings::parse("").profiles, d.profiles, "в старом файле меню нет — берётся «Дополнительное»");
+        assert!(Settings::parse("profiles = 0\n").profiles.is_empty(), "убрали намеренно — не возвращаем");
         let s = Settings {
             profiles: vec![
-                ProfileCfg { id: 2, button: 2, hotkey: None },
-                ProfileCfg { id: 4, button: 0, hotkey: Chord::parse("ctrl+alt+n").ok() },
+                ProfileCfg { name: "Работа".into(), ..ProfileCfg::new(2, 2) },
+                ProfileCfg { hotkey: Chord::parse("ctrl+alt+n").ok(), ..ProfileCfg::new(4, 0) },
             ],
             ..Settings::default()
         };
@@ -287,9 +324,23 @@ mod tests {
         assert_eq!(s.profiles[1].file_name(), "menu-4.yaml");
     }
 
+    fn s_names() -> Vec<String> {
+        (2..=4).map(ProfileCfg::default_name).collect()
+    }
+
+    #[test]
+    fn names_are_cleaned() {
+        assert_eq!(clean_name("  Работа \t"), Some("Работа".to_string()));
+        assert_eq!(clean_name("   "), None);
+        assert_eq!(clean_name(&"я".repeat(50)).unwrap().chars().count(), NAME_MAX);
+        let s = Settings::parse("profile3_button = 1\nprofile3_name =   \n");
+        assert_eq!(s.profiles[0].name, "Мое меню 1", "пустое название — по умолчанию");
+    }
+
     #[test]
     fn broken_profiles_are_dropped() {
         // без кнопки и сочетания, с чужим номером и сверх лимита
+        assert_eq!(s_names(), vec!["Дополнительное", "Мое меню 1", "Мое меню 2"]);
         let s = Settings::parse("profile2 = 1\nprofile3_button = 1\nprofile9_button = 1\nprofile4_button = 7\n");
         assert_eq!(s.profiles.iter().map(|p| p.id).collect::<Vec<_>>(), vec![3]);
     }

@@ -222,11 +222,11 @@ fn sync_triggers(app: &App) {
         if let Some(p) = app.settings.profiles.get(n) {
             (button, hotkey) = (p.button, p.hotkey);
             if button != 0 && button == app.settings.button {
-                diag::log(&format!("профиль {}: кнопка занята основным меню, кнопка профиля не работает", p.id));
+                diag::log(&format!("меню «{}»: кнопка занята основным меню, здесь она не работает", p.name));
                 button = 0;
             }
             if hotkey.is_some() && hotkey == app.settings.hotkey {
-                diag::log(&format!("профиль {}: сочетание занято основным меню, сочетание профиля не работает", p.id));
+                diag::log(&format!("меню «{}»: сочетание занято основным меню, здесь оно не работает", p.name));
                 hotkey = None;
             }
         }

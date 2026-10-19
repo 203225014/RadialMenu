@@ -107,7 +107,7 @@ pub fn load_menu(settings: &Settings) -> (MenuSet, Option<MenuError>) {
             None => default_menu(),
         };
         set.profiles.push(Profile {
-            name: format!("Профиль {}", cfg.id),
+            name: cfg.name.clone(),
             trigger: Trigger { button: cfg.button, hotkey: cfg.hotkey },
             menu,
         });

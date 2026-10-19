@@ -4,7 +4,7 @@
 
 use crate::model::settings::{DWELL_RANGE, SENS_RANGE, SIZE_RANGE};
 use crate::model::action::vk;
-use crate::model::{Chord, ProfileCfg, Settings, Theme, ThemeMode, MAX_PROFILES};
+use crate::model::{clean_name, Chord, ProfileCfg, Settings, Theme, ThemeMode, MAX_PROFILES, NAME_MAX};
 use crate::render::painter::{blend, Align, Painter};
 use crate::render::palette::{self, Ui};
 
@@ -22,16 +22,19 @@ const VALUE_W: f32 = 64.0;
 // строки окна
 // вверху — меню (вкладки профилей и то, что относится к выбранной вкладке), ниже — общее
 const R_TABS: usize = 0;
-const R_BUTTON: usize = 1;
-const R_HOTKEY: usize = 2;
-const R_MENU: usize = 3;
-const R_THEME: usize = 4;
-const R_SIZE: usize = 5;
-const R_SENS: usize = 6;
-const R_DWELL: usize = 7;
-const R_VAULT: usize = 8;
-const R_AUTO: usize = 9;
-const R_UPDATE: usize = 10;
+const R_NAME: usize = 1;
+const R_BUTTON: usize = 2;
+const R_HOTKEY: usize = 3;
+const R_MENU: usize = 4;
+const R_THEME: usize = 5;
+const R_SIZE: usize = 6;
+const R_SENS: usize = 7;
+const R_DWELL: usize = 8;
+const R_VAULT: usize = 9;
+const R_AUTO: usize = 10;
+const R_UPDATE: usize = 11;
+/// Ширина поля названия; правее — кнопка «Добавить меню».
+const NAME_W: f32 = 128.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slider {
@@ -212,8 +215,9 @@ pub struct SettingsForm {
     recording: bool,
 }
 
-const ROWS: [&str; 11] = [
+const ROWS: [&str; 12] = [
     "",
+    "Название",
     "Кнопка мыши",
     "Сочетание клавиш",
     "Состав меню",
@@ -282,8 +286,21 @@ impl SettingsForm {
     /// Название вкладки.
     fn tab_name(&self, k: usize) -> String {
         match k.checked_sub(1).and_then(|k| self.draft.profiles.get(k)) {
-            Some(p) => format!("Профиль {}", p.id),
+            Some(p) => clean_name(&p.name).unwrap_or_else(|| ProfileCfg::default_name(p.id)),
             None => "Основное".to_string(),
+        }
+    }
+
+    /// Название выбранного меню для поля ввода (`None` — основное, его не переименовать).
+    pub fn selected_name(&self) -> Option<&str> {
+        self.selected.checked_sub(1).and_then(|k| self.draft.profiles.get(k)).map(|p| p.name.as_str())
+    }
+
+    /// Название меню изменили в поле ввода.
+    pub fn set_name(&mut self, name: &str) {
+        let limited: String = name.chars().take(NAME_MAX).collect();
+        if let Some(p) = self.selected.checked_sub(1).and_then(|k| self.draft.profiles.get_mut(k)) {
+            p.name = limited;
         }
     }
 
@@ -404,11 +421,39 @@ impl SettingsForm {
 
     /// Вкладки: основное меню, профили и «+» на всю ширину окна.
     fn tab_boxes(&self) -> Vec<Box2> {
-        let cells = 1 + self.draft.profiles.len() + usize::from(self.can_add_profile());
+        let cells = 1 + self.draft.profiles.len();
         let y = Self::row_y(R_TABS) + (ROW - CTRL_H) / 2.0;
         let (x0, full) = (PAD, W - 2.0 * PAD);
         let w = full / cells as f32;
         (0..cells).map(|i| self.b(x0 + w * i as f32, y, w, CTRL_H)).collect()
+    }
+
+    fn name_box(&self) -> Box2 {
+        self.control(R_NAME, NAME_W)
+    }
+
+    /// Где платформе разместить родное поле названия (у основного меню его нет).
+    pub fn name_edit_rect(&self) -> Option<Box2> {
+        (self.selected != 0).then(|| {
+            let b = self.name_box();
+            let (px, py) = (self.s(10.0), self.s(8.0));
+            Box2 { x: b.x + px, y: b.y + py, w: b.w - 2.0 * px, h: b.h - 2.0 * py }
+        })
+    }
+
+    /// Место под родное поле названия (показывается, только когда выбрано не основное меню).
+    pub fn name_edit_area(&self) -> Box2 {
+        let b = self.name_box();
+        let (px, py) = (self.s(10.0), self.s(8.0));
+        Box2 { x: b.x + px, y: b.y + py, w: b.w - 2.0 * px, h: b.h - 2.0 * py }
+    }
+
+    /// «Добавить меню» — пока не достигнут предел.
+    fn add_box(&self) -> Option<Box2> {
+        self.can_add_profile().then(|| {
+            let c = self.control(R_NAME, Self::ctrl_w() - NAME_W - 8.0);
+            Box2 { x: self.s(CTRL_X + NAME_W + 8.0), ..c }
+        })
     }
 
     fn menu_file_box(&self) -> Box2 {
@@ -458,7 +503,7 @@ impl SettingsForm {
         }
         for (i, b) in self.tab_boxes().iter().enumerate() {
             if b.contains(x, y) {
-                return Some(if i <= self.draft.profiles.len() { Target::Tab(i) } else { Target::AddProfile });
+                return Some(Target::Tab(i));
             }
         }
         for (b, m) in self.seg_boxes(R_THEME, 3).iter().zip(ThemeMode::ALL) {
@@ -486,6 +531,7 @@ impl SettingsForm {
             (self.browse_box(), Target::Browse),
             (self.toggle_box(), Target::Autostart),
             (self.menu_file_box(), Target::MenuFile),
+            (self.add_box().unwrap_or(Box2 { x: -1.0, y: -1.0, w: 0.0, h: 0.0 }), Target::AddProfile),
             (self.remove_box().unwrap_or(Box2 { x: -1.0, y: -1.0, w: 0.0, h: 0.0 }), Target::RemoveProfile),
             (self.update_button().map_or(Box2 { x: -1.0, y: -1.0, w: 0.0, h: 0.0 }, |b| b.0), Target::Update),
             (cancel, Target::Cancel),
@@ -691,7 +737,7 @@ impl SettingsForm {
         let id = (2u8..=4).find(|id| !self.draft.profiles.iter().any(|p| p.id == *id)).unwrap_or(2);
         let used = |b: u8| self.draft.button == b || self.draft.profiles.iter().any(|p| p.button == b);
         let button = [1u8, 2].into_iter().find(|&b| !used(b)).unwrap_or(0);
-        self.draft.profiles.push(ProfileCfg { id, button, hotkey: None });
+        self.draft.profiles.push(ProfileCfg::new(id, button));
         self.draft.profiles.sort_by_key(|p| p.id);
         self.selected = self.draft.profiles.iter().position(|p| p.id == id).map_or(0, |k| k + 1);
     }
@@ -720,6 +766,9 @@ impl SettingsForm {
     }
 
     fn try_save(&mut self) -> Cmd {
+        for p in &mut self.draft.profiles {
+            p.name = clean_name(&p.name).unwrap_or_else(|| ProfileCfg::default_name(p.id));
+        }
         if let Err((tab, text)) = self.check_triggers() {
             self.selected = tab; // показать, где поправить
             self.status = Some(Status { text, bad: true });
@@ -777,15 +826,26 @@ impl SettingsForm {
 
         // вкладки меню: основное, профили, «+»
         let boxes = self.tab_boxes();
-        let n_tabs = 1 + self.draft.profiles.len();
-        let mut names: Vec<String> = (0..n_tabs).map(|k| self.tab_name(k)).collect();
-        if boxes.len() > n_tabs {
-            names.push("+".to_string());
-        }
+        let names: Vec<String> = (0..boxes.len()).map(|k| self.tab_name(k)).collect();
         let labels: Vec<&str> = names.iter().map(String::as_str).collect();
-        self.segments(p, f, &c, &boxes, &labels, self.selected, |i| {
-            if i < n_tabs { Target::Tab(i) } else { Target::AddProfile }
-        });
+        self.segments(p, f, &c, &boxes, &labels, self.selected, Target::Tab);
+
+        // название меню: у основного — просто текст, у остальных — поле; рядом «Добавить меню»
+        let nb = self.name_box();
+        if self.selected == 0 {
+            p.text(&f.regular, "Основное меню", nb.x + self.s(2.0), nb.cy(), self.s(13.0), c.dim, Align::Left);
+        } else {
+            p.fill_rrect(nb.x, nb.y, nb.w, nb.h, self.s(8.0), c.bg2, 1.0);
+            p.stroke_rrect(nb.x, nb.y, nb.w, nb.h, self.s(8.0), c.edge, 0.45, 1.0);
+            if vault_text {
+                let r = self.name_edit_rect().unwrap_or(nb);
+                let name = self.selected_name().unwrap_or("");
+                p.text_clipped(&f.regular, name, r.x, r.y + r.h / 2.0, self.s(13.0), c.fg, r.w);
+            }
+        }
+        if let Some(ab) = self.add_box() {
+            self.button(p, f, &c, ab, "Добавить меню", Target::AddProfile, false);
+        }
 
         // тема и кнопка мыши — сегменты
         let themes = ["Авто", "Светлая", "Тёмная"];
@@ -951,7 +1011,10 @@ impl SettingsForm {
                 p.fill_rrect(b.x + inset, b.y + inset, b.w - 2.0 * inset, b.h - 2.0 * inset, r - inset, blend(c.bg2, c.fg, 0.08), 1.0);
             }
             let col = if i == selected { c.on_acc } else { c.fg };
-            p.text(&f.regular, label, b.x + b.w / 2.0, b.cy(), self.s(13.0), col, Align::Center);
+            let px = self.s(13.0);
+            let max_w = b.w - self.s(10.0);
+            let tw = Painter::measure(&f.regular, label, px).min(max_w);
+            p.text_clipped(&f.regular, label, b.x + b.w / 2.0 - tw / 2.0, b.cy(), px, col, max_w);
         }
     }
 
@@ -1105,10 +1168,11 @@ mod tests {
     #[test]
     fn profiles_are_added_selected_edited_and_removed() {
         let mut f = form();
-        assert_eq!(f.tab_boxes().len(), 2, "основное и «+»");
-        let plus = tab(&f, 1);
-        assert_eq!(click(&mut f, plus), Cmd::Redraw); // «+»
-        assert_eq!(f.draft.profiles, vec![ProfileCfg { id: 2, button: 2, hotkey: None }], "берётся свободная боковая кнопка");
+        assert_eq!(f.tab_boxes().len(), 1, "пока только основное");
+        assert!(f.name_edit_rect().is_none(), "основное переименовать нельзя");
+        let add = f.add_box().expect("«Добавить меню»");
+        assert_eq!(click(&mut f, add), Cmd::Redraw);
+        assert_eq!(f.draft.profiles, vec![ProfileCfg::new(2, 2)], "берётся свободная боковая кнопка");
         assert_eq!(f.selected, 1);
         // кнопки и сочетание правят выбранный профиль, а не основное меню
         let b = f.seg_boxes(R_BUTTON, 3)[1];
@@ -1134,13 +1198,40 @@ mod tests {
     }
 
     #[test]
+    fn menus_are_renamed() {
+        let mut f = form();
+        f.add_profile();
+        assert!(f.name_edit_rect().is_some());
+        assert_eq!(f.selected_name(), Some("Дополнительное"));
+        f.set_name("Работа");
+        assert_eq!(f.tab_name(1), "Работа");
+        f.set_name(&"я".repeat(40));
+        assert_eq!(f.selected_name().unwrap().chars().count(), NAME_MAX);
+        // пустое название при сохранении — по умолчанию
+        f.set_name("   ");
+        assert_eq!(f.tab_name(1), "Дополнительное");
+        assert_eq!(f.key(Key::Enter), Cmd::Save);
+        assert_eq!(f.draft.profiles[0].name, "Дополнительное");
+        // у основного меню названия нет
+        f.selected = 0;
+        assert_eq!(f.selected_name(), None);
+        f.set_name("не должно сработать");
+        assert_eq!(f.draft.profiles[0].name, "Дополнительное");
+    }
+
+    #[test]
     fn at_most_three_profiles() {
         let mut f = form();
         for _ in 0..5 {
             f.add_profile();
         }
         assert_eq!(f.draft.profiles.iter().map(|p| p.id).collect::<Vec<_>>(), vec![2, 3, 4]);
-        assert_eq!(f.tab_boxes().len(), 4, "«+» больше не нужен");
+        assert_eq!(f.tab_boxes().len(), 4);
+        assert!(f.add_box().is_none(), "«Добавить меню» больше не нужна");
+        assert_eq!(
+            (0..4).map(|k| f.tab_name(k)).collect::<Vec<_>>(),
+            ["Основное", "Дополнительное", "Мое меню 1", "Мое меню 2"]
+        );
     }
 
     #[test]
@@ -1153,11 +1244,12 @@ mod tests {
         assert_eq!(f.key(Key::Enter), Cmd::Redraw);
         let st = f.status.clone().unwrap();
         assert!(st.bad && st.text.contains("одна и та же кнопка мыши"), "{}", st.text);
+        assert!(st.text.contains("Дополнительное и Основное") || st.text.contains("Основное и Дополнительное"), "{}", st.text);
         assert_eq!(f.selected, 1, "показали профиль, где править");
         // профиль без кнопки и сочетания
         f.draft.profiles[0].button = 0;
         assert_eq!(f.key(Key::Enter), Cmd::Redraw);
-        assert!(f.status.unwrap().text.contains("Профиль 2: выберите кнопку"));
+        assert!(f.status.unwrap().text.contains("Дополнительное: выберите кнопку"));
     }
 
     #[test]
