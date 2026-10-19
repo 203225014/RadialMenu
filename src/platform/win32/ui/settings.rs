@@ -18,11 +18,10 @@ use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowTextLengthW,
     GetWindowTextW, IsWindow, LoadCursorW, PostMessageW, RegisterClassW, SendMessageW,
-    SetTimer, SetWindowTextW, ShowWindow, ES_AUTOHSCROLL, HTCAPTION, IDC_ARROW, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE,
+    MoveWindow, SetTimer, SetWindowTextW, ShowWindow, ES_AUTOHSCROLL, HTCAPTION, IDC_ARROW, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCLBUTTONDOWN,
     WM_PAINT, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_POPUP,
-    WS_VISIBLE,
 };
 
 use super::focus::take_focus;
@@ -39,7 +38,7 @@ use crate::platform::win32::updater::{self, Mode};
 use crate::render::painter::Painter;
 use crate::render::palette;
 use crate::model::NAME_MAX;
-use crate::ui::settings_form::{Cmd, Fonts, Key, SettingsForm, Status};
+use crate::ui::settings_form::{Box2, Cmd, Fonts, Key, SettingsForm, Status};
 
 /// Что делать по «Сохранить»: применить и записать (ошибка — показать в окне).
 pub type OnSave = fn(Settings, bool) -> Result<(), String>;
@@ -53,13 +52,22 @@ const EN_CHANGE: u32 = 0x0300;
 const EM_LIMITTEXT: u32 = 0x00C5;
 const TIMER_UPDATE: usize = 7;
 
+type Rect4 = (i32, i32, i32, i32);
+
+#[derive(Default)]
+struct Shown {
+    vault: Option<Rect4>,
+    name: Option<Rect4>,
+    name_for: Option<usize>,
+}
+
 struct Win {
     hwnd: isize,
     edit: isize,
-    /// Поле названия меню (видно, только когда выбрано не основное меню).
+    /// Поле названия раскрытого меню (видно только на странице «Меню»).
     name_edit: isize,
-    /// Для какой вкладки в поле сейчас лежит название.
-    name_tab: usize,
+    /// Где родные поля сейчас показаны (`None` — скрыты) и для какого меню лежит название.
+    shown: Shown,
     form: SettingsForm,
     fonts: Fonts,
     on_save: OnSave,
@@ -165,17 +173,16 @@ unsafe fn create(form: SettingsForm, fonts: Fonts, on_save: OnSave, on_preview: 
     )?;
     round_corners(hwnd);
 
-    let r = form.vault_edit_rect();
     let text = wide(&form.draft.vault);
     let edit = CreateWindowExW(
         WINDOW_EX_STYLE(0),
         w!("EDIT"),
         pcwstr(&text),
-        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-        r.x.round() as i32,
-        r.y.round() as i32,
-        r.w.round() as i32,
-        r.h.round() as i32,
+        WS_CHILD | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+        0,
+        0,
+        10,
+        10,
         Some(hwnd),
         None,
         Some(hinst.into()),
@@ -201,17 +208,16 @@ unsafe fn create(form: SettingsForm, fonts: Fonts, on_save: OnSave, on_preview: 
     SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
     let _ = SetWindowSubclass(edit, Some(edit_proc), 1, 0);
 
-    // поле названия меню: то же оформление; у основного меню скрыто
-    let nr = form.name_edit_area();
+    // поле названия меню: то же оформление; положение и видимость задаёт sync_edits
     let name_edit = CreateWindowExW(
         WINDOW_EX_STYLE(0),
         w!("EDIT"),
         w!(""),
         WS_CHILD | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-        nr.x.round() as i32,
-        nr.y.round() as i32,
-        nr.w.round() as i32,
-        nr.h.round() as i32,
+        0,
+        0,
+        10,
+        10,
         Some(hwnd),
         None,
         Some(hinst.into()),
@@ -228,7 +234,7 @@ unsafe fn create(form: SettingsForm, fonts: Fonts, on_save: OnSave, on_preview: 
             hwnd: hwnd.0 as isize,
             edit: edit.0 as isize,
             name_edit: name_edit.0 as isize,
-            name_tab: 0,
+            shown: Shown::default(),
             form,
             fonts,
             on_save,
@@ -239,6 +245,7 @@ unsafe fn create(form: SettingsForm, fonts: Fonts, on_save: OnSave, on_preview: 
             tracking: false,
         })
     });
+    sync_edits();
     let _ = ShowWindow(hwnd, SW_SHOW);
     take_focus(hwnd, hwnd);
     // ход проверки и скачивания приходит из другого потока — сверяемся с ним по таймеру
@@ -316,30 +323,57 @@ fn sync_update(hwnd: HWND) {
     }
 }
 
-/// Поле названия показывает название выбранного меню (или прячется у основного).
-unsafe fn sync_name_edit() {
-    let Some((edit, tab, name)) = with(|w| (w.name_edit, w.form.selected, w.form.selected_name().map(str::to_owned))) else {
+/// Родные поля ввода: поставить на место, показать/спрятать по странице, подставить название меню.
+unsafe fn sync_edits() {
+    let rect = |r: Box2| (r.x.round() as i32, r.y.round() as i32, r.w.round() as i32, r.h.round() as i32);
+    let Some((vault, name, vr, nr, sel, name_text)) = with(|w| {
+        (
+            w.edit,
+            w.name_edit,
+            w.form.vault_edit_rect().map(rect),
+            w.form.name_edit_rect().map(rect),
+            w.form.selected,
+            w.form.selected_name(),
+        )
+    }) else {
         return;
     };
-    if with(|w| std::mem::replace(&mut w.name_tab, tab)) == Some(tab) {
-        return; // вкладка та же — текст правит сам пользователь
-    }
-    match name {
-        Some(n) => {
-            let t = wide(&n);
-            let _ = SetWindowTextW(h(edit), pcwstr(&t));
-            let _ = ShowWindow(h(edit), SW_SHOW);
+    let (old_v, old_n, old_for) = with(|w| (w.shown.vault, w.shown.name, w.shown.name_for)).unwrap_or_default();
+    let place = |edit: isize, new: Option<Rect4>, old: Option<Rect4>| {
+        if new == old {
+            return;
         }
-        None => {
-            let _ = ShowWindow(h(edit), SW_HIDE);
+        match new {
+            Some((x, y, w, h)) => {
+                let _ = MoveWindow(h_of(edit), x, y, w, h, true);
+                if old.is_none() {
+                    let _ = ShowWindow(h_of(edit), SW_SHOW);
+                }
+            }
+            None => {
+                let _ = ShowWindow(h_of(edit), SW_HIDE);
+            }
         }
+    };
+    place(vault, vr, old_v);
+    place(name, nr, old_n);
+    if nr.is_some() && (old_n.is_none() || old_for != Some(sel)) {
+        let t = wide(&name_text);
+        let _ = SetWindowTextW(h_of(name), pcwstr(&t));
     }
+    with(|w| {
+        w.shown = Shown { vault: vr, name: nr, name_for: nr.map(|_| sel) };
+    });
+}
+
+fn h_of(v: isize) -> HWND {
+    h(v)
 }
 
 /// Исполнить команду формы и привести в порядок поле названия (вкладка могла смениться).
 unsafe fn run(hwnd: HWND, cmd: Cmd) {
     run_cmd(hwnd, cmd);
-    sync_name_edit();
+    sync_edits();
 }
 
 /// Исполнить команду формы — уже вне `with`: тут бывают диалоги и синхронные сообщения.
@@ -388,6 +422,15 @@ unsafe fn run_cmd(hwnd: HWND, cmd: Cmd) {
         Cmd::StopRecording => {
             hook::set_recorder(None);
             let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+        Cmd::OpenLog => {
+            crate::platform::diag::log("журнал открыт из настроек"); // чтобы файл точно существовал
+            send::open(&crate::platform::diag::log_path().to_string_lossy());
+        }
+        Cmd::OpenFolder => {
+            if let Some(d) = files::config_dir() {
+                send::open(&d.to_string_lossy());
+            }
         }
         Cmd::OpenMenuFile(id) => {
             let path = match id {
@@ -529,6 +572,10 @@ unsafe extern "system" fn win_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_RM_RECORD => {
             let m = lparam.0 as u32;
             let cmd = with(|w| {
+                // боковая кнопка мыши: wParam = RECORD_MOUSE | номер кнопки
+                if wparam.0 & hook::RECORD_MOUSE != 0 {
+                    return w.form.record_button((wparam.0 & 0xFF) as u8);
+                }
                 w.form.record(
                     wparam.0 as u16,
                     m & MOD_CTRL != 0,

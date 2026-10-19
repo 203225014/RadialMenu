@@ -47,6 +47,8 @@ pub const WM_RM_UP: u32 = WM_APP + 2;
 pub const WM_RM_WHEEL: u32 = WM_APP + 3;
 /// Окну, записывающему сочетание: wParam — клавиша, lParam — модификаторы (`MOD_*`).
 pub const WM_RM_RECORD: u32 = WM_APP + 4;
+/// Признак в wParam `WM_RM_RECORD`: это боковая кнопка мыши (младший байт — 1 «назад» или 2 «вперёд»).
+pub const RECORD_MOUSE: usize = 0x1_0000;
 
 pub const MOD_CTRL: u32 = 1;
 pub const MOD_ALT: u32 = 2;
@@ -299,6 +301,14 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         match wparam.0 as u32 {
             m @ (WM_XBUTTONDOWN | WM_XBUTTONUP) => {
                 let which = (info.mouseData >> 16) & 0xFFFF;
+                // запись вызова в настройках: боковая кнопка уходит окну, а не меню и не странице
+                let recorder = s.recorder.load(Relaxed);
+                if recorder != 0 {
+                    if m == WM_XBUTTONDOWN {
+                        post_to(recorder, WM_RM_RECORD, RECORD_MOUSE | which as usize, 0);
+                    }
+                    return LRESULT(1);
+                }
                 let profile = (0..SLOTS).find(|&p| {
                     let b = s.slots[p].button.load(Relaxed);
                     b != 0 && b == which

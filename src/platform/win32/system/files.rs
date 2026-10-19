@@ -14,6 +14,13 @@ fn dir() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("RadialMenu"))
 }
 
+/// Папка с настройками, меню и журналом (создаётся, если её нет).
+pub fn config_dir() -> Option<PathBuf> {
+    let d = dir()?;
+    let _ = std::fs::create_dir_all(&d);
+    Some(d)
+}
+
 pub fn config_path() -> Option<PathBuf> {
     dir().map(|d| d.join("config.txt"))
 }

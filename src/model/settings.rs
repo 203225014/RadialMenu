@@ -3,7 +3,7 @@
 use super::action::Chord;
 use super::theme::ThemeMode;
 
-/// Дополнительное меню (профиль) со своей кнопкой мыши и/или сочетанием; состав — в файле
+/// Основное 2 меню (профиль) со своей кнопкой мыши и/или сочетанием; состав — в файле
 /// `menu-{id}.yaml` рядом с `menu.yaml`. Основное меню — это `button`/`hotkey` настроек.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProfileCfg {
@@ -12,21 +12,24 @@ pub struct ProfileCfg {
     /// 0 — мышь не используется, 1 — «назад», 2 — «вперёд».
     pub button: u8,
     pub hotkey: Option<Chord>,
-    /// Название вкладки («Дополнительное», «Мое меню 1»…); переименовывается в «Настройках».
+    /// Название вкладки («Основное 2», «Мое меню 1»…); переименовывается в «Настройках».
     pub name: String,
 }
+
+/// Название основного меню по умолчанию.
+pub const MAIN_NAME: &str = "Основное 1";
 
 /// Самое длинное название меню, символов.
 pub const NAME_MAX: usize = 24;
 
 impl ProfileCfg {
-    /// Меню с названием по умолчанию: «Дополнительное» для первого, дальше «Мое меню 1», «Мое меню 2».
+    /// Меню с названием по умолчанию: «Основное 2» (навигация), дальше «Мое меню 1», «Мое меню 2».
     pub fn new(id: u8, button: u8) -> ProfileCfg {
         ProfileCfg { id, button, hotkey: None, name: Self::default_name(id) }
     }
 
     pub fn default_name(id: u8) -> String {
-        if id == 2 { "Дополнительное".to_string() } else { format!("Мое меню {}", id.saturating_sub(2)) }
+        if id == 2 { "Основное 2".to_string() } else { format!("Мое меню {}", id.saturating_sub(2)) }
     }
 
     pub fn file_name(&self) -> String {
@@ -67,7 +70,9 @@ pub struct Settings {
     pub theme: ThemeMode,
     /// Раз в сутки спрашивать у GitHub, не вышла ли новая версия.
     pub check_updates: bool,
-    /// Дополнительные меню на другие кнопки/сочетания.
+    /// Название основного меню (его файл — menu.yaml).
+    pub main_name: String,
+    /// Остальные меню на другие кнопки/сочетания.
     pub profiles: Vec<ProfileCfg>,
 }
 
@@ -82,6 +87,7 @@ impl Default for Settings {
             dwell_ms: 450,
             theme: ThemeMode::Auto,
             check_updates: true,
+            main_name: MAIN_NAME.to_string(),
             // навигация жестами на боковую «вперёд» (меню — в menu-2.yaml)
             profiles: vec![ProfileCfg::new(2, 2)],
         }
@@ -91,7 +97,7 @@ impl Default for Settings {
 impl Settings {
     pub fn parse(text: &str) -> Settings {
         let mut s = Settings::default();
-        // меню перечисляются в файле явно; в файле старой версии их нет вовсе — тогда остаётся «Дополнительное»
+        // меню перечисляются в файле явно; в файле старой версии их нет вовсе — тогда остаётся «Основное 2»
         let mut explicit = false;
         s.profiles.clear();
         for line in text.lines() {
@@ -119,6 +125,7 @@ impl Settings {
                     }
                 }
                 "profiles" => explicit = true,
+                "main_name" => s.main_name = clean_name(v).unwrap_or_else(|| MAIN_NAME.to_string()),
                 _ => {
                     if let Some((id, field)) = k.strip_prefix("profile").and_then(|r| {
                         let (num, field) = r.split_once('_').unwrap_or((r, ""));
@@ -151,6 +158,7 @@ impl Settings {
     }
 
     pub fn normalize(&mut self) {
+        self.main_name = clean_name(&self.main_name).unwrap_or_else(|| MAIN_NAME.to_string());
         for p in &mut self.profiles {
             p.name = clean_name(&p.name).unwrap_or_else(|| ProfileCfg::default_name(p.id));
         }
@@ -221,7 +229,9 @@ impl Settings {
     pub fn to_text(&self) -> String {
         format!(
             "# Радиальное меню (удобнее менять через «Настройки» в трее)\n\
-             # button: 0 = не использовать, 1 = боковая «назад», 2 = боковая «вперёд»\nbutton = {}\n\
+             # название основного меню (его состав — menu.yaml)
+main_name = {}
+\n             # button: 0 = не использовать, 1 = боковая «назад», 2 = боковая «вперёд»\nbutton = {}\n\
              # сочетание клавиш для меню (держать, пока меню открыто), например ctrl+alt+space; пусто — нет\nhotkey = {}\n\
              # папка хранилища Obsidian для заметок\nvault = \"{}\"\n\
              # чувствительность, % ({}..{})\nsens_percent = {}\n\
@@ -229,6 +239,7 @@ impl Settings {
              # задержка раскрытия подменю, мс ({}..{})\ndwell_ms = {}\n\
              # тема: auto (как в системе), light, dark\ntheme = {}\n\
              # проверять обновления раз в сутки (1/0); запрос идёт только на github.com\ncheck_updates = {}\n{}",
+            self.main_name,
             self.button,
             self.hotkey.map(|c| c.to_text()).unwrap_or_default(),
             self.vault,
@@ -310,8 +321,8 @@ mod tests {
     fn profiles_round_trip_and_default_to_navigation() {
         let d = Settings::default();
         assert_eq!(d.profiles, vec![ProfileCfg::new(2, 2)]);
-        assert_eq!(d.profiles[0].name, "Дополнительное");
-        assert_eq!(Settings::parse("").profiles, d.profiles, "в старом файле меню нет — берётся «Дополнительное»");
+        assert_eq!(d.profiles[0].name, "Основное 2");
+        assert_eq!(Settings::parse("").profiles, d.profiles, "в старом файле меню нет — берётся «Основное 2»");
         assert!(Settings::parse("profiles = 0\n").profiles.is_empty(), "убрали намеренно — не возвращаем");
         let s = Settings {
             profiles: vec![
@@ -340,7 +351,7 @@ mod tests {
     #[test]
     fn broken_profiles_are_dropped() {
         // без кнопки и сочетания, с чужим номером и сверх лимита
-        assert_eq!(s_names(), vec!["Дополнительное", "Мое меню 1", "Мое меню 2"]);
+        assert_eq!(s_names(), vec!["Основное 2", "Мое меню 1", "Мое меню 2"]);
         let s = Settings::parse("profile2 = 1\nprofile3_button = 1\nprofile9_button = 1\nprofile4_button = 7\n");
         assert_eq!(s.profiles.iter().map(|p| p.id).collect::<Vec<_>>(), vec![3]);
     }
