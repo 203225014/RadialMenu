@@ -1,6 +1,6 @@
 [package]
 name = "radial_menu"
-version = "0.10.1"
+version = "0.11.0"
 edition = "2021"
 description = "Радиальное меню на боковой кнопке мыши (Windows)"
 license = "MIT"
