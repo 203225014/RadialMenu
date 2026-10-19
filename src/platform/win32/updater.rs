@@ -164,7 +164,7 @@ pub fn take_answer() -> Notice {
         }
         Err(e) => {
             diag::log(&format!("проверка обновлений: {e}"));
-            set_view(UpdateView::Failed { msg: format!("Не удалось проверить: {e}"), retry: false });
+            set_view(UpdateView::Failed { msg: "Нет связи с GitHub".into(), retry: false });
             if mode == Mode::Tray { Notice::Failed(e) } else { Notice::None }
         }
     }

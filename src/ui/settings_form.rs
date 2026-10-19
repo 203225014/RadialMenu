@@ -769,8 +769,8 @@ impl SettingsForm {
         match &self.update {
             UpdateView::Idle => note(p, "Ещё не проверялось", c.dim),
             UpdateView::Checking => note(p, "Проверяю…", c.dim),
-            UpdateView::UpToDate => note(p, "Установлена последняя версия", c.ok),
-            UpdateView::Available(v) => note(p, &format!("Доступна версия {v}"), c.acc),
+            UpdateView::UpToDate => note(p, "Версия актуальна", c.ok),
+            UpdateView::Available(v) => note(p, &format!("Доступна {v}"), c.acc),
             UpdateView::Downloading(pct) => {
                 p.text(&f.regular, &format!("Скачиваю обновление — {pct} %"), t.x, top, self.s(13.0), c.fg, Align::Left);
                 bar(p, *pct as f32 / 100.0);
