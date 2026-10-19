@@ -269,7 +269,7 @@ impl<'a> Canvas<'a> {
             let r = Rect { x0: x, y0: y, x1: x + img.w as i32, y1: y + img.h as i32 }.clip(self.w, self.h);
             for py in r.y0..r.y1 {
                 for px in r.x0..r.x1 {
-                    let a = img.data[((py - y) as usize * img.w + (px - x) as usize) * 4 + 3] as f32 / 255.0 * (alpha / 255.0);
+                    let a = img.data[((py - y) as usize * img.w + (px - x) as usize) * 4 + 3] as f32 / 255.0 * alpha;
                     if let (true, Some(g)) = (a > 0.0, self.glass(px, py)) {
                         self.over(px, py, [g[0] * a, g[1] * a, g[2] * a], a);
                     }
@@ -595,6 +595,19 @@ mod tests {
         assert!(at(&glass, 160, 100)[0] > at(&plain, 160, 100)[0], "под заливкой виден снимок");
         assert_eq!(at(&glass, 100, 100), at(&plain, 100, 100), "вне кнопки снимка нет");
         assert!(at(&glass, 160, 100)[3] > 150);
+    }
+
+    #[test]
+    fn glass_works_under_plates_too() {
+        let (w, h) = (60usize, 40usize);
+        let white = vec![255u8; w * h * 4];
+        let plate = Rgba { w: 20, h: 10, data: [0, 0, 0, 100].repeat(200) };
+        let paint = |backdrop: Option<&[u8]>| {
+            let mut buf = vec![0u8; w * h * 4];
+            Canvas::new(w, h, &mut buf).with_backdrop(backdrop).image_glass(&plate, 10, 10, 1.0);
+            buf[(15 * w + 20) * 4]
+        };
+        assert!(paint(Some(&white)) > paint(None) + 50, "под плашкой виден снимок");
     }
 
     #[test]

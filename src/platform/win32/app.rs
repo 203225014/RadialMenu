@@ -48,7 +48,7 @@ use crate::ui::settings_form::Status;
 const NIN_BALLOONUSERCLICK: u32 = 0x0405;
 
 /// Радиус размытия «стекла» под кнопками, px (минимальный: контуры фона угадываются).
-const BLUR_RADIUS: usize = 5;
+const BLUR_RADIUS: usize = 2;
 
 const TIMER_ACTION: usize = 1;
 const TIMER_STEPS: usize = 2;
