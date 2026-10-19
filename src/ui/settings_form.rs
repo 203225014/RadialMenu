@@ -895,7 +895,10 @@ impl SettingsForm {
     fn draw_update(&self, p: &mut Painter, f: &Fonts, c: &Ui) {
         let t = self.update_text_box();
         let (top, bottom) = (t.y + t.h * 0.28, t.y + t.h * 0.78);
-        p.text(&f.regular, &format!("Версия {}", self.version), t.x, top, self.s(13.0), c.fg, Align::Left);
+        // во время скачивания первая строка — ход обновления, версию не рисуем поверх него
+        if !matches!(self.update, UpdateView::Downloading(_) | UpdateView::Installing) {
+            p.text(&f.regular, &format!("Версия {}", self.version), t.x, top, self.s(13.0), c.fg, Align::Left);
+        }
         let bar = |p: &mut Painter, part: f32| {
             let (h, y) = (self.s(6.0), bottom - self.s(3.0));
             p.fill_rrect(t.x, y, t.w, h, h / 2.0, blend(c.bg2, c.dim, 0.35), 1.0);
