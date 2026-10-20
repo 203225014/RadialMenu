@@ -134,7 +134,7 @@ fn main() {
     shot(&dir, "menu-main-light.png", &main_menu, Theme::Light, &none, find(&main_menu, "Заметка"), font.as_ref());
     shot(&dir, "menu-media.png", &main_menu, Theme::Dark, &playing, find(&main_menu, "Пауза"), font.as_ref());
     shot(&dir, "menu-copy.png", &main_menu, Theme::Dark, &none, find(&main_menu, "Вырезать"), font.as_ref());
-    shot(&dir, "menu-nav.png", &nav, Theme::Dark, &desktops, find(&nav, "Стол вперёд"), font.as_ref());
+    shot(&dir, "menu-nav.png", &nav, Theme::Dark, &desktops, find(&nav, "Вперёд"), font.as_ref());
     shot(&dir, "menu-custom.png", &custom, Theme::Dark, &playing, find(&custom, "Громче"), font.as_ref());
 
     // окно настроек
