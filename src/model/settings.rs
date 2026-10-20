@@ -1,6 +1,7 @@
 //! Пользовательские настройки: простой файл `ключ = значение` (комментарии — `#`).
 
 use super::action::Chord;
+use super::games::{self, GamePolicy};
 use super::theme::ThemeMode;
 
 /// Дополнительное меню (профиль) со своей кнопкой мыши и/или сочетанием; состав — в файле
@@ -48,6 +49,10 @@ pub struct Settings {
     pub check_updates: bool,
     /// Дополнительные меню на другие кнопки/сочетания.
     pub profiles: Vec<ProfileCfg>,
+    /// Не вызывать меню, пока активна полноэкранная программа (игра): кнопки и сочетания остаются ей.
+    pub ignore_fullscreen: bool,
+    /// Программы, в которых меню не вызывается никогда (имена exe в нижнем регистре).
+    pub ignore_apps: Vec<String>,
 }
 
 impl Default for Settings {
@@ -63,6 +68,8 @@ impl Default for Settings {
             check_updates: true,
             // навигация жестами на боковую «вперёд» (меню — в menu-2.yaml)
             profiles: vec![ProfileCfg { id: 2, button: 2, hotkey: None }],
+            ignore_fullscreen: true,
+            ignore_apps: Vec::new(),
         }
     }
 }
@@ -95,6 +102,14 @@ impl Settings {
                         _ => s.check_updates,
                     }
                 }
+                "ignore_fullscreen" => {
+                    s.ignore_fullscreen = match v.to_ascii_lowercase().as_str() {
+                        "0" | "false" | "no" | "off" => false,
+                        "1" | "true" | "yes" | "on" => true,
+                        _ => s.ignore_fullscreen,
+                    }
+                }
+                "ignore_apps" => s.ignore_apps = games::parse_list(v),
                 _ => {
                     if let Some((id, field)) = k.strip_prefix("profile").and_then(|r| {
                         let (num, field) = r.split_once('_').unwrap_or((r, ""));
@@ -168,6 +183,11 @@ impl Settings {
             || self.dwell_ms != other.dwell_ms
     }
 
+    /// Правила «не мешать в играх» для хука.
+    pub fn game_policy(&self) -> GamePolicy {
+        GamePolicy { ignore_fullscreen: self.ignore_fullscreen, ignore_apps: self.ignore_apps.clone() }
+    }
+
     /// Строки профилей для config.txt.
     fn profiles_text(&self) -> String {
         self.profiles
@@ -193,7 +213,9 @@ impl Settings {
              # размер меню, % ({}..{})\nsize_percent = {}\n\
              # задержка раскрытия подменю, мс ({}..{})\ndwell_ms = {}\n\
              # тема: auto (как в системе), light, dark\ntheme = {}\n\
-             # проверять обновления раз в сутки (1/0); запрос идёт только на github.com\ncheck_updates = {}\n{}",
+             # проверять обновления раз в сутки (1/0); запрос идёт только на github.com\ncheck_updates = {}\n\
+             # не вызывать меню, пока активна полноэкранная программа (игра), чтобы кнопки и сочетания остались ей (1/0)\nignore_fullscreen = {}\n\
+             # программы, в которых меню не вызывается никогда: имена exe через запятую, например game.exe, dota2.exe\nignore_apps = {}\n{}",
             self.button,
             self.hotkey.map(|c| c.to_text()).unwrap_or_default(),
             self.vault,
@@ -208,6 +230,8 @@ impl Settings {
             self.dwell_ms,
             self.theme.key(),
             u8::from(self.check_updates),
+            u8::from(self.ignore_fullscreen),
+            self.ignore_apps.join(", "),
             self.profiles_text(),
         )
     }
@@ -292,6 +316,18 @@ mod tests {
         // без кнопки и сочетания, с чужим номером и сверх лимита
         let s = Settings::parse("profile2 = 1\nprofile3_button = 1\nprofile9_button = 1\nprofile4_button = 7\n");
         assert_eq!(s.profiles.iter().map(|p| p.id).collect::<Vec<_>>(), vec![3]);
+    }
+
+    #[test]
+    fn game_rules_round_trip() {
+        let d = Settings::default();
+        assert!(d.ignore_fullscreen && d.ignore_apps.is_empty(), "новая установка не мешает в играх");
+        let s = Settings::parse("ignore_fullscreen = 0\nignore_apps = Game.exe, C:\\G\\Dota2.exe\n");
+        assert!(!s.ignore_fullscreen);
+        assert_eq!(s.ignore_apps, ["game.exe", "dota2.exe"]);
+        assert_eq!(Settings::parse(&s.to_text()), s);
+        assert!(Settings::parse("").ignore_fullscreen, "старый файл без ключа — правило включено");
+        assert_eq!(s.game_policy().ignore_apps.len(), 2);
     }
 
     #[test]
