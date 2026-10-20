@@ -56,8 +56,6 @@ pub struct Engine {
     t_prev: f64,
     toast: Option<(&'static str, f64)>,
     prev_dirty: Rect,
-    /// Шрифт для подписи, которая известна только во время работы (что сейчас играет).
-    font: Option<fontdue::Font>,
     pill_scale: f32,
     track: Option<Track>,
     track_cards: Vec<(Theme, Rgba)>,
@@ -120,7 +118,6 @@ impl Engine {
             t_prev: 0.0,
             toast: None,
             prev_dirty: Rect::EMPTY,
-            font: font.cloned(),
             pill_scale: ui_scale * settings_scale,
             track: None,
             track_cards: Vec::new(),
@@ -135,17 +132,25 @@ impl Engine {
         }
         self.track = track.cloned();
         self.track_cards.clear();
-        let (Some(font), Some(t)) = (&self.font, &self.track) else {
+        let Some(t) = &self.track else {
+            return;
+        };
+        if !self.menu.uses(crate::model::Flag::Media) {
+            return;
+        }
+        // Шрифт целиком — несколько МБ, поэтому в памяти его не держим: грузим на время, пока рисуем
+        // карточку (≈10 мс на смену трека, пока меню открыто), и тут же отпускаем.
+        let Some(font) = raster::load_font() else {
             return;
         };
         let s = self.pill_scale;
         let max_w = (raster::CARD_W - raster::CARD_PAD_L - raster::CARD_PAD_R) * s;
         let fit = Track {
-            title: fit_text(font, &t.title, 13.5 * s, max_w),
-            artist: fit_text(font, &t.artist, 12.0 * s, max_w),
+            title: fit_text(&font, &t.title, 13.5 * s, max_w),
+            artist: fit_text(&font, &t.artist, 12.0 * s, max_w),
             paused: t.paused,
         };
-        self.track_cards = Theme::ALL.iter().map(|&th| (th, raster::track_card(font, &fit, th, s))).collect();
+        self.track_cards = Theme::ALL.iter().map(|&th| (th, raster::track_card(&font, &fit, th, s))).collect();
     }
 
     pub fn menu(&self) -> &Menu {
@@ -542,6 +547,24 @@ mod tests {
         if font.is_some() {
             assert!(e.bake.icon(&IconRef::Letter('Б')).is_some());
         }
+    }
+
+    #[test]
+    fn track_card_exists_only_for_menus_with_a_player() {
+        use crate::model::Item;
+        if raster::load_font().is_none() {
+            return;
+        }
+        let track = Track { title: "Песня".into(), artist: "Группа".into(), paused: false };
+        let mk = |menu: Menu| Engine::new(Settings::default(), 1.0, (1920, 1080), menu, None, Theme::Dark, &raster::no_program_icons);
+        let mut plain = mk(Menu::from_items(vec![Item::new("gear", "А").action(Action::Note)]));
+        plain.set_track(Some(&track));
+        assert!(plain.track_cards.is_empty(), "у меню без плеера карточки трека нет");
+        let mut player = mk(crate::model::default_menu());
+        player.set_track(Some(&track));
+        assert_eq!(player.track_cards.len(), Theme::ALL.len(), "карточка готова для каждой темы без шрифта в памяти");
+        player.set_track(None);
+        assert!(player.track_cards.is_empty());
     }
 
     #[test]
