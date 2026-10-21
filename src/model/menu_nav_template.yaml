@@ -1,9 +1,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  Радиальное меню — «Основное 2» (жесты навигации); вызывается своей кнопкой/сочетанием из «Настроек»
 #
-#  Жесты в четыре стороны: влево / вправо — «назад» / «вперёд» в окне под указателем, вверх — скриншот
-#  области (если задержаться — скриншот окна под указателем), вниз — веер из двух кнопок: рабочий стол
-#  назад / вперёд (на первом и последнем столе соответствующая кнопка приглушена: enabled_if).
+#  Жесты в четыре стороны: влево / вправо — рабочий стол назад / вперёд (на первом и последнем столе
+#  соответствующая кнопка приглушена: enabled_if), вверх — скриншот области (если задержаться — скриншот
+#  окна под указателем), вниз — веер из двух кнопок: страница назад / вперёд в окне под указателем.
 #
 #  Формат файла и список значков — в menu.yaml рядом (в начале файла).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -18,10 +18,10 @@ menu:
     dwell: true
     items:
       - { label: Скриншот окна, icon: window, action: screenshot-window }
-  - { label: Вперёд, icon: arrow-right, action: forward }
-  - label: Рабочие столы
-    icon: desktops
+  - { label: Стол вперёд, icon: desktop-next, keys: ctrl+win+right, enabled_if: desktop-next }
+  - label: Страницы
+    icon: file
     items:
-      - { label: Стол назад, icon: desktop-prev, keys: ctrl+win+left, enabled_if: desktop-prev }
-      - { label: Стол вперёд, icon: desktop-next, keys: ctrl+win+right, enabled_if: desktop-next }
-  - { label: Назад, icon: arrow-left, action: back }
+      - { label: Назад, icon: arrow-left, action: back }
+      - { label: Вперёд, icon: arrow-right, action: forward }
+  - { label: Стол назад, icon: desktop-prev, keys: ctrl+win+left, enabled_if: desktop-prev }

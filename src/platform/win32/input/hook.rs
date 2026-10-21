@@ -24,7 +24,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Input::{
     GetRawInputData, RegisterRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER,
-    RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE,
+    RIDEV_INPUTSINK, RIDEV_REMOVE, RID_INPUT, RIM_TYPEMOUSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetMessageW,
@@ -39,6 +39,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::model::action::vk;
 use crate::model::{Chord, MAX_PROFILES};
 use crate::platform::win32::system::util;
+
+use super::game;
 
 /// Сообщения главному окну. `WM_RM_DOWN`: wParam — номер профиля (0 — основное меню).
 pub const WM_RM_DOWN: u32 = WM_APP + 1;
@@ -111,6 +113,9 @@ struct Shared {
     main_hwnd: AtomicIsize,
 }
 
+/// Окно-приёмник Raw Input (0 — ещё не создано).
+static RAW_WINDOW: AtomicIsize = AtomicIsize::new(0);
+
 static SHARED: Shared = Shared {
     slots: [Slot { button: AtomicU32::new(1), hotkey: AtomicU32::new(0) }, NO_SLOT, NO_SLOT, NO_SLOT],
     active: AtomicU8::new(0),
@@ -142,6 +147,11 @@ pub fn set_trigger(profile: usize, button: u8, hotkey: Option<Chord>) {
         slot.button.store(button.min(2) as u32, Relaxed);
         slot.hotkey.store(hotkey.map_or(0, pack), Relaxed);
     }
+}
+
+/// Правила «не мешать в играх» (см. `model::games`).
+pub fn set_game_policy(p: crate::model::GamePolicy) {
+    game::set_policy(p);
 }
 
 /// Пауза: выключенный хук пропускает все события дальше.
@@ -318,7 +328,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                         return CallNextHookEx(None, code, wparam, lparam);
                     }
                     if m == WM_XBUTTONDOWN {
-                        if !capturing {
+                        if !capturing && !game::bypass_now() {
                             s.cap_button.store(which, Relaxed);
                             begin(SRC_MOUSE, profile, (info.pt.x, info.pt.y));
                             return LRESULT(1);
@@ -416,7 +426,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                 let hk = s.slots[p].hotkey.load(Relaxed);
                 hk != 0 && key as u32 == hk & 0xFFFF && now == hk >> 16
             });
-            if let Some(profile) = profile {
+            if let Some(profile) = profile.filter(|_| !game::bypass_now()) {
                 let mut pt = POINT::default();
                 let _ = GetCursorPos(&mut pt);
                 s.key_tick.store(tick_ms(), Relaxed);
@@ -460,7 +470,8 @@ unsafe extern "system" fn raw_proc(
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-/// Окно-приёмник Raw Input на потоке хука.
+/// Окно-приёмник Raw Input (создаётся один раз) и подписка на мышь.
+/// Пока активна игра, подписку снимаем: иначе каждое движение мыши будило бы наш поток.
 unsafe fn setup_raw() -> bool {
     let Ok(hinst) = GetModuleHandleW(None) else {
         return false;
@@ -473,22 +484,27 @@ unsafe fn setup_raw() -> bool {
         ..Default::default()
     };
     RegisterClassW(&wc);
-    let Ok(hwnd) = CreateWindowExW(
-        WINDOW_EX_STYLE(0),
-        class,
-        w!(""),
-        WINDOW_STYLE(0),
-        0,
-        0,
-        0,
-        0,
-        Some(HWND_MESSAGE),
-        None,
-        Some(hinst.into()),
-        None,
-    ) else {
-        return false;
-    };
+    let mut hwnd = HWND(RAW_WINDOW.load(Relaxed) as *mut _);
+    if hwnd.0.is_null() {
+        let Ok(created) = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            class,
+            w!(""),
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            Some(hinst.into()),
+            None,
+        ) else {
+            return false;
+        };
+        RAW_WINDOW.store(created.0 as isize, Relaxed);
+        hwnd = created;
+    }
     let rid = RAWINPUTDEVICE {
         usUsagePage: 1,
         usUsage: 2,
@@ -496,6 +512,17 @@ unsafe fn setup_raw() -> bool {
         hwndTarget: hwnd,
     };
     RegisterRawInputDevices(&[rid], std::mem::size_of::<RAWINPUTDEVICE>() as u32).is_ok()
+}
+
+/// Снять подписку на Raw Input (окно остаётся для повторной подписки).
+unsafe fn teardown_raw() {
+    let rid = RAWINPUTDEVICE {
+        usUsagePage: 1,
+        usUsage: 2,
+        dwFlags: RIDEV_REMOVE,
+        hwndTarget: HWND::default(),
+    };
+    let _ = RegisterRawInputDevices(&[rid], std::mem::size_of::<RAWINPUTDEVICE>() as u32);
 }
 
 /// Оба хука; `None` — не удалось поставить хук мыши (без него меню не работает вовсе).
@@ -634,13 +661,35 @@ fn thread_main() {
         SetTimer(None, 0, WATCHDOG_MS, None);
         let mut stuck_ticks = 0u32;
         let mut alive = Liveness::default();
+        let mut gaming = false; // хуки сняты, пока активна игра
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
             if msg.message == WM_TIMER && msg.hwnd.is_invalid() {
+                let capturing = SHARED.capture.load(Relaxed) != SRC_NONE;
+                // Игра на переднем плане: хуки вообще не стоят, поэтому ни одно движение мыши и ни одно
+                // нажатие не проходит через наш процесс (в играх это ещё и лишняя задержка ввода).
+                // Вернётся окно рабочего стола или другая программа — ставим хуки обратно.
+                let want_off = !capturing && SHARED.recorder.load(Relaxed) == 0 && game::bypass_now();
+                if want_off && !gaming {
+                    if let Some(old) = hooks.take() {
+                        uninstall(old);
+                    }
+                    teardown_raw();
+                    gaming = true;
+                    crate::platform::diag::log("активна игра или программа из списка исключений: хуки ввода сняты");
+                } else if !want_off && gaming {
+                    hooks = install();
+                    SHARED.raw_ok.store(setup_raw(), Relaxed);
+                    alive = Liveness::default();
+                    gaming = false;
+                    crate::platform::diag::log("игра закрыта: хуки ввода поставлены");
+                }
+                if gaming {
+                    continue;
+                }
                 watchdog(&mut stuck_ticks);
                 let mut p = POINT::default();
                 let _ = GetCursorPos(&mut p);
-                let capturing = SHARED.capture.load(Relaxed) != SRC_NONE;
                 if alive.tick((p.x, p.y), SHARED.calls.load(Relaxed), capturing) {
                     if let Some(old) = hooks.take() {
                         uninstall(old);

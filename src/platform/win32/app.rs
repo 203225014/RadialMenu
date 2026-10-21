@@ -216,6 +216,7 @@ fn apply_settings(app: &mut App, new: Settings) {
 /// Передать хуку, чем вызывается основное меню и каждый профиль. Профиль, который просит ту же
 /// кнопку или то же сочетание, что основное, не включается: основное в настройках главнее.
 fn sync_triggers(app: &App) {
+    hook::set_game_policy(app.settings.game_policy());
     hook::set_trigger(0, app.settings.button, app.settings.hotkey);
     for n in 0..MAX_PROFILES {
         let (mut button, mut hotkey) = (0, None);
@@ -580,13 +581,15 @@ unsafe extern "system" fn main_proc(
             // щёлкнули по уведомлению «вышла новая версия» — открыть настройки, где кнопка «Обновить»
             NIN_BALLOONUSERCLICK if updater::available().is_some() => open_settings(),
             WM_RBUTTONUP => {
-                let (paused, on) = with_app(|a| (a.paused, a.settings.check_updates)).unwrap_or((false, true));
-                match tray::menu(hwnd, paused, updater::available().as_deref(), on) {
+                let (paused, on, games) = with_app(|a| (a.paused, a.settings.check_updates, a.settings.ignore_fullscreen))
+                    .unwrap_or((false, true, true));
+                match tray::menu(hwnd, paused, updater::available().as_deref(), on, games) {
                     Some(Cmd::Settings) => open_settings(),
                     Some(Cmd::TogglePause) => toggle_pause(hwnd),
                     Some(Cmd::ToggleAutostart) => autostart::set(!autostart::enabled()),
                     Some(Cmd::Update) => open_settings(),
                     Some(Cmd::ToggleUpdates) => toggle_updates(),
+                    Some(Cmd::ToggleGames) => toggle_games(),
                     Some(Cmd::CheckNow) => updater::check(Mode::Tray),
                     Some(Cmd::OpenLog) => {
                         diag::log("журнал открыт из трея"); // чтобы файл точно существовал
@@ -730,6 +733,19 @@ fn on_update_answer(hwnd: HWND) {
             tray::notify(hwnd, &tip, "Не удалось проверить обновления", &format!("{e}\nПроверьте подключение к интернету."))
         }
     }
+}
+
+/// «Не мешать в играх» из трея: сохранить в config.txt и сразу передать хуку.
+fn toggle_games() {
+    with_app(|a| {
+        let mut s = a.settings.clone();
+        s.ignore_fullscreen = !s.ignore_fullscreen;
+        if files::save_settings(&s).is_ok() {
+            a.settings = s;
+            a.stamps.0 = files::mtime(&files::config_path()); // свою запись не перечитываем
+            hook::set_game_policy(a.settings.game_policy());
+        }
+    });
 }
 
 fn toggle_updates() {

@@ -655,12 +655,14 @@ mod tests {
         let m = &set.main;
         let top: Vec<_> = m.top().iter().map(|&i| m.node(i).label.clone()).collect();
         // сверху, справа, снизу, слева
-        assert_eq!(top, ["Скриншот", "Вперёд", "Рабочие столы", "Назад"]);
+        assert_eq!(top, ["Скриншот", "Стол вперёд", "Страницы", "Стол назад"]);
         let shot = m.top()[0];
         assert!(m.node(shot).dwell && m.children(shot).len() == 1, "скриншот окна — по задержке");
-        let desks = m.children(m.top()[2]);
-        assert_eq!(desks.len(), 2, "рабочие столы — веер из двух");
-        assert!(desks.iter().all(|&d| m.node(d).enabled_if.is_some()));
+        // столы — основные кнопки слева и справа, недоступные на крайних столах
+        assert!([m.top()[1], m.top()[3]].iter().all(|&d| m.node(d).enabled_if.is_some() && m.children(d).is_empty()));
+        // страницы — веер из двух снизу: назад и вперёд
+        let pages: Vec<_> = m.children(m.top()[2]).iter().map(|&p| m.node(p).label.clone()).collect();
+        assert_eq!(pages, ["Назад", "Вперёд"]);
         assert!(m.uses(Flag::DesktopPrev) && m.uses(Flag::DesktopNext));
     }
 

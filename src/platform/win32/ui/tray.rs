@@ -51,6 +51,8 @@ pub enum Cmd {
     /// Открыть настройки, где можно обновить программу.
     Update,
     ToggleUpdates,
+    /// «Не мешать в играх»: пропускать вызов меню в полноэкранных программах.
+    ToggleGames,
     CheckNow,
     Exit,
 }
@@ -154,8 +156,9 @@ pub fn remove(hwnd: HWND) {
 }
 
 /// Контекстное меню значка; возвращает выбранную команду.
-/// `update` — версия, которую можно скачать (пункт появляется первым); `check_updates` — галка проверки.
-pub fn menu(hwnd: HWND, paused: bool, update: Option<&str>, check_updates: bool) -> Option<Cmd> {
+/// `update` — версия, которую можно скачать (пункт появляется первым); `check_updates` — галка проверки;
+/// `games` — галка «не мешать в играх».
+pub fn menu(hwnd: HWND, paused: bool, update: Option<&str>, check_updates: bool, games: bool) -> Option<Cmd> {
     unsafe {
         let m = CreatePopupMenu().ok()?;
         let settings = wide("Настройки…");
@@ -178,6 +181,8 @@ pub fn menu(hwnd: HWND, paused: bool, update: Option<&str>, check_updates: bool)
             MF_STRING
         };
         let _ = AppendMenuW(m, checked, 3, pcwstr(&auto));
+        let games_item = wide("Не мешать в играх (полный экран)");
+        let _ = AppendMenuW(m, if games { MF_STRING | MF_CHECKED } else { MF_STRING }, 9, pcwstr(&games_item));
         let upd_on = wide("Проверять обновления");
         let upd_now = wide("Проверить обновления сейчас");
         let _ = AppendMenuW(m, if check_updates { MF_STRING | MF_CHECKED } else { MF_STRING }, 6, pcwstr(&upd_on));
@@ -208,6 +213,7 @@ pub fn menu(hwnd: HWND, paused: bool, update: Option<&str>, check_updates: bool)
             6 => Some(Cmd::ToggleUpdates),
             7 => Some(Cmd::CheckNow),
             8 => Some(Cmd::Update),
+            9 => Some(Cmd::ToggleGames),
             _ => None,
         }
     }
