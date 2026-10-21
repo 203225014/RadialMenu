@@ -148,7 +148,7 @@ fn main() {
         let mut form = SettingsForm::new(s, true, 1.0);
         form.version = env!("CARGO_PKG_VERSION").into();
         let (w, h) = form.size();
-        let mut save = |form: &SettingsForm, name: String| {
+        let save = |form: &SettingsForm, name: String| {
             let mut p = Painter::new(w as u32, h as u32).unwrap();
             form.draw(&mut p, &fonts, theme, true);
             let rgb: Vec<u8> = p.rgba().chunks_exact(4).flat_map(|c| [c[0], c[1], c[2]]).collect();
