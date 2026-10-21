@@ -283,6 +283,88 @@ main_name = {}
     }
 }
 
+/// Ключи «Общих» настроек: их возвращает к стандарту кнопка «Сбросить» на странице «Общие».
+pub const GENERAL_KEYS: [&str; 6] = ["theme", "size_percent", "sens_percent", "dwell_ms", "ignore_fullscreen", "ignore_apps"];
+
+/// Значения ключей в тексте настроек (только действующие строки `ключ = значение`, не комментарии).
+fn key_values(text: &str) -> std::collections::BTreeMap<String, String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect()
+}
+
+/// Ключи, записанные в файле явно (раскомментированные).
+pub fn explicit_keys(text: &str) -> std::collections::BTreeSet<String> {
+    key_values(text).into_keys().collect()
+}
+
+/// Ключ описывает меню, их вызовы и папку заметок — это выбор человека, а не «стандартное поведение»: пишем всегда.
+fn is_structural(key: &str) -> bool {
+    matches!(key, "button" | "hotkey" | "vault" | "main_name" | "profiles") || key.starts_with("profile")
+}
+
+impl Settings {
+    /// Вернуть «Общие» настройки к стандартным (папка заметок, меню и их вызовы не трогаются).
+    pub fn reset_general(&mut self) {
+        let d = Settings::default();
+        self.theme = d.theme;
+        self.size_percent = d.size_percent;
+        self.sens_percent = d.sens_percent;
+        self.dwell_ms = d.dwell_ms;
+        self.ignore_fullscreen = d.ignore_fullscreen;
+        self.ignore_apps = d.ignore_apps;
+    }
+
+    /// Ключи, значения которых у `self` и `other` различаются.
+    pub fn changed_keys(&self, other: &Settings) -> std::collections::BTreeSet<String> {
+        let (a, b) = (key_values(&self.to_text()), key_values(&other.to_text()));
+        a.keys().chain(b.keys()).filter(|k| a.get(*k) != b.get(*k)).cloned().collect()
+    }
+
+    /// Текст файла настроек, в котором **явно записано только то, что отличается от стандарта** или что
+    /// человек менял сам (`explicit`). Остальное — закомментированные строки со стандартным значением:
+    /// когда мы изменим стандарт, у тех, кто эти настройки не трогал, поменяется и поведение, а выбор
+    /// тех, кто настраивал, останется как был. Раскомментировав строку, можно зафиксировать значение.
+    pub fn to_text_minimal(&self, explicit: &std::collections::BTreeSet<String>) -> String {
+        let defaults = key_values(&Settings::default().to_text());
+        let mut out = String::new();
+        let mut comments: Vec<&str> = Vec::new();
+        let full = self.to_text();
+        for line in full.lines() {
+            let t = line.trim();
+            if t.starts_with('#') {
+                comments.push(line);
+                continue;
+            }
+            let Some((k, v)) = t.split_once('=') else {
+                for c in comments.drain(..) {
+                    out.push_str(c);
+                    out.push('\n');
+                }
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            };
+            let (k, v) = (k.trim(), v.trim());
+            let keep = is_structural(k) || explicit.contains(k) || defaults.get(k).map(String::as_str) != Some(v);
+            for c in comments.drain(..) {
+                out.push_str(c);
+                out.push('\n');
+            }
+            if keep {
+                out.push_str(line);
+            } else {
+                out.push_str(&format!("# {line}    (стандартное значение: следует за обновлениями программы)"));
+            }
+            out.push('\n');
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +485,61 @@ mod tests {
 ").check_updates);
         let off = Settings { check_updates: false, ..Settings::default() };
         assert!(!Settings::parse(&off.to_text()).check_updates);
+    }
+
+    #[test]
+    fn untouched_settings_follow_the_defaults() {
+        let s = Settings::default();
+        let text = s.to_text_minimal(&Default::default());
+        let keys = explicit_keys(&text);
+        assert!(!keys.contains("size_percent") && !keys.contains("theme") && !keys.contains("ignore_fullscreen"), "{keys:?}");
+        assert!(text.contains("# size_percent = 100"), "строка остаётся в файле закомментированной — как подсказка");
+        assert_eq!(Settings::parse(&text), s, "закомментированное читается как стандарт");
+    }
+
+    #[test]
+    fn customised_and_explicit_values_are_written() {
+        let s = Settings { size_percent: 120, theme: ThemeMode::Light, ..Settings::default() };
+        let keys = explicit_keys(&s.to_text_minimal(&Default::default()));
+        assert!(keys.contains("size_percent") && keys.contains("theme"), "значение не стандартное — пишем");
+        assert!(!keys.contains("dwell_ms"));
+        // человек сам выбрал значение, равное стандарту, — оно фиксируется
+        let explicit: std::collections::BTreeSet<String> = ["dwell_ms".to_string()].into();
+        assert!(explicit_keys(&Settings::default().to_text_minimal(&explicit)).contains("dwell_ms"));
+        assert_eq!(Settings::parse(&s.to_text_minimal(&Default::default())), s);
+    }
+
+    #[test]
+    fn menus_and_triggers_are_always_written() {
+        let s = Settings { button: 2, ..Settings::default() };
+        let text = s.to_text_minimal(&Default::default());
+        assert!(explicit_keys(&text).contains("profiles"), "состав меню — не «стандартное значение»");
+        assert_eq!(Settings::parse(&text), s);
+    }
+
+    #[test]
+    fn changed_keys_see_only_real_changes() {
+        let a = Settings::default();
+        let b = Settings { sens_percent: 150, check_updates: false, ..Settings::default() };
+        let keys: Vec<String> = a.changed_keys(&b).into_iter().collect();
+        assert_eq!(keys, ["check_updates", "sens_percent"]);
+        assert!(a.changed_keys(&a).is_empty());
+    }
+
+    #[test]
+    fn reset_general_keeps_vault_and_menus() {
+        let mut s = Settings {
+            size_percent: 130,
+            theme: ThemeMode::Dark,
+            ignore_fullscreen: false,
+            ignore_apps: vec!["game.exe".into()],
+            vault: "D:/V".into(),
+            button: 2,
+            ..Settings::default()
+        };
+        s.reset_general();
+        let d = Settings::default();
+        assert_eq!((s.size_percent, s.theme, s.ignore_fullscreen, s.ignore_apps.len()), (d.size_percent, d.theme, true, 0));
+        assert_eq!((s.vault.as_str(), s.button), ("D:/V", 2));
     }
 }

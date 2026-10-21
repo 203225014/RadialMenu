@@ -456,6 +456,26 @@ unsafe fn run_cmd(hwnd: HWND, cmd: Cmd) {
             with(|w| w.form.status = Some(status));
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
+        Cmd::ResetMenuFile(id) => {
+            let status = match files::reset_menu_file(id) {
+                Ok(name) => Status {
+                    text: format!("{name} сброшен к стандартному. Прежний файл сохранён как {name}.bak"),
+                    bad: false,
+                },
+                Err(e) => Status { text: e, bad: true },
+            };
+            with(|w| w.form.status = Some(status));
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+        Cmd::ResetGeneral => {
+            let status = match files::reset_general() {
+                Ok(_) => Status { text: "Общие настройки сброшены к стандартным".into(), bad: false },
+                Err(e) => Status { text: e, bad: true },
+            };
+            preview_if_changed(); // тема в черновике могла измениться — сразу показать её в меню
+            with(|w| w.form.status = Some(status));
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
         Cmd::CheckUpdates => {
             updater::check(Mode::Settings);
             sync_update(hwnd);

@@ -2,6 +2,7 @@
 //! Ничего не знает ни о графике, ни об ОС.
 
 pub mod action;
+pub mod defaults;
 pub mod games;
 pub mod icon;
 pub mod menu;

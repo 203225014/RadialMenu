@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use super::util::log_error;
+use crate::model::defaults::{self, Kind, Ledger, Plan};
 use crate::model::menu_yaml::{self, MenuError};
+use crate::model::settings::{explicit_keys, GENERAL_KEYS};
 use crate::model::{default_menu, MenuSet, Profile, ProfileCfg, Settings, Trigger};
 use crate::render::assets;
 
@@ -52,7 +54,7 @@ pub fn load_settings() -> Settings {
         None => {
             let d = Settings::default();
             if let Some(p) = &path {
-                write_new(p, &d.to_text());
+                write_new(p, &d.to_text_minimal(&Default::default()));
             }
             d
         }
@@ -61,12 +63,98 @@ pub fn load_settings() -> Settings {
     s
 }
 
+/// Сохранить настройки. В файле явно остаётся только то, что отличается от стандарта или что человек менял
+/// сам: остальное следует за стандартными значениями, которые мы можем обновлять.
 pub fn save_settings(s: &Settings) -> Result<(), String> {
+    write_settings(s, &[])
+}
+
+/// То же, но перечисленные ключи снова становятся «стандартными» (кнопка «Сбросить»).
+fn write_settings(s: &Settings, forget: &[&str]) -> Result<(), String> {
     let p = config_path().ok_or("не найдена папка APPDATA")?;
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    std::fs::write(&p, s.to_text()).map_err(|e| format!("не удалось записать настройки: {e}"))
+    let prev = std::fs::read_to_string(&p).unwrap_or_default();
+    let mut explicit = explicit_keys(&prev);
+    explicit.extend(Settings::parse(&prev).changed_keys(s)); // то, что поменяли сейчас, — выбор человека
+    for k in forget {
+        explicit.remove(*k);
+    }
+    std::fs::write(&p, s.to_text_minimal(&explicit)).map_err(|e| format!("не удалось записать настройки: {e}"))
+}
+
+/// «Общие» настройки (тема, размеры, чувствительность, задержка, игры) — к стандартным значениям.
+pub fn reset_general() -> Result<Settings, String> {
+    let mut s = Settings::parse(&config_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default());
+    s.reset_general();
+    write_settings(&s, &GENERAL_KEYS)?;
+    Ok(s)
+}
+
+// ---------------------------------------------------------------- стандартные меню
+
+fn ledger_path() -> Option<PathBuf> {
+    dir().map(|d| d.join("defaults.txt"))
+}
+
+fn load_ledger() -> Ledger {
+    ledger_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| Ledger::parse(&t)).unwrap_or_default()
+}
+
+fn save_ledger(l: &Ledger) {
+    if let Some(p) = ledger_path() {
+        write_new(&p, &l.to_text());
+    }
+}
+
+fn file_name(p: &std::path::Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Файл стандартного меню: нет — создать; не менялся, а стандарт новее — обновить; менялся — не трогать.
+fn ensure_managed(path: &std::path::Path, kind: Kind) {
+    let name = file_name(path);
+    let mut ledger = load_ledger();
+    let text = std::fs::read_to_string(path).ok();
+    let plan = defaults::plan(kind, text.as_deref(), ledger.get(&name));
+    match plan {
+        Plan::Keep => return,
+        Plan::Create | Plan::Upgrade => {
+            write_new(&path.to_path_buf(), kind.text());
+            if plan == Plan::Upgrade {
+                crate::platform::diag::log(&format!("{name}: не менялся — обновлён до нового стандартного меню"));
+            }
+        }
+        Plan::Adopt => {}
+    }
+    ledger.set(&name, kind);
+    save_ledger(&ledger);
+}
+
+fn kind_of(id: u8) -> Kind {
+    if id == 2 {
+        Kind::Nav
+    } else {
+        Kind::Main
+    }
+}
+
+/// Вернуть меню к стандартному: прежний файл сохраняется рядом как `имя.bak`.
+/// `id` — 0 для основного, иначе номер меню. Возвращает имя файла.
+pub fn reset_menu_file(id: u8) -> Result<String, String> {
+    let path = if id == 0 { menu_path() } else { dir().map(|d| d.join(format!("menu-{id}.yaml"))) }.ok_or("не найдена папка APPDATA")?;
+    let name = file_name(&path);
+    if path.exists() {
+        let bak = path.with_file_name(format!("{name}.bak"));
+        std::fs::copy(&path, &bak).map_err(|e| format!("не удалось сохранить копию {name}.bak: {e}"))?;
+    }
+    let kind = kind_of(id);
+    std::fs::write(&path, kind.text()).map_err(|e| format!("не удалось записать {name}: {e}"))?;
+    let mut ledger = load_ledger();
+    ledger.set(&name, kind);
+    save_ledger(&ledger);
+    Ok(name)
 }
 
 /// Файл меню профиля (`menu-2.yaml`…).
@@ -122,21 +210,17 @@ pub fn load_menu(settings: &Settings) -> (MenuSet, Option<MenuError>) {
     (set, first_error)
 }
 
-/// Файл меню профиля; если его нет — кладём шаблон («Навигация» для профиля 2, иначе — как у основного).
+/// Файл меню профиля; если его нет — кладём шаблон («Навигация» для меню 2, иначе — как у основного).
 pub fn ensure_profile_file(cfg: &ProfileCfg) -> Option<PathBuf> {
     let p = profile_path(cfg)?;
-    if !p.exists() {
-        write_new(&p, if cfg.id == 2 { menu_yaml::NAV_TEMPLATE } else { menu_yaml::TEMPLATE });
-    }
+    ensure_managed(&p, kind_of(cfg.id));
     Some(p)
 }
 
 /// Убедиться, что menu.yaml (с описанием формата) и папка icons существуют.
 pub fn ensure_menu_file() -> Option<PathBuf> {
     let p = menu_path()?;
-    if !p.exists() {
-        write_new(&p, menu_yaml::TEMPLATE);
-    }
+    ensure_managed(&p, Kind::Main);
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d.join("icons"));
     }

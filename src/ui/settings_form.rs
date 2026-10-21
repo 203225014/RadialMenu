@@ -134,6 +134,8 @@ pub enum Target {
     /// «+ Назначить» (и «Нажмите…» во время записи).
     Assign,
     MenuFile,
+    /// «Сбросить» состав меню к стандартному (с подтверждением вторым нажатием).
+    ResetMenu,
     RemoveMenu,
     AddMenu,
     Theme(ThemeMode),
@@ -141,6 +143,8 @@ pub enum Target {
     Vault,
     Browse,
     Autostart,
+    /// «Сбросить» общие настройки к стандартным (с подтверждением вторым нажатием).
+    ResetGeneral,
     AutoCheck,
     /// Кнопка в строке обновления (что она делает — зависит от состояния).
     Update,
@@ -165,6 +169,10 @@ pub enum Cmd {
     Browse,
     /// Открыть файл меню в редакторе: 0 — menu.yaml, иначе номер меню (menu-N.yaml).
     OpenMenuFile(u8),
+    /// Вернуть файл меню к стандартному (прежний останется как .bak): 0 — menu.yaml, иначе номер меню.
+    ResetMenuFile(u8),
+    /// Общие настройки сброшены в черновике — платформа записывает их в файл как «стандартные».
+    ResetGeneral,
     /// Начать запись вызова: платформа отключает свой перехват клавиш и кнопок, пока идёт запись.
     StartRecording,
     /// Запись закончена (или отменена): вернуть перехват и перерисовать.
@@ -251,6 +259,7 @@ struct CardBody {
     name: Box2,
     call: Box2,
     file: Box2,
+    reset: Box2,
     remove: Option<Box2>,
 }
 
@@ -287,6 +296,8 @@ pub struct SettingsForm {
     pressed: Option<Target>,
     drag: Option<Slider>,
     recording: bool,
+    /// Кнопка «Сбросить», по которой уже нажали один раз (ждёт подтверждения).
+    armed: Option<Target>,
 }
 
 impl SettingsForm {
@@ -304,6 +315,7 @@ impl SettingsForm {
             pressed: None,
             drag: None,
             recording: false,
+            armed: None,
         }
     }
 
@@ -435,7 +447,8 @@ impl SettingsForm {
         let mut cards = Vec::new();
         for k in 0..self.n_menus() {
             let open = k == self.selected;
-            let h = if open { CARD_HEAD + 2.0 + 3.0 * CARD_ROW + 8.0 } else { CARD_HEAD };
+            let rows = if k == 0 { 3.0 } else { 4.0 };
+            let h = if open { CARD_HEAD + 2.0 + rows * CARD_ROW + 8.0 } else { CARD_HEAD };
             let header = self.b(PAD, y, CARD_W, CARD_HEAD);
             let body = open.then(|| {
                 let r0 = y + CARD_HEAD + 2.0;
@@ -443,8 +456,9 @@ impl SettingsForm {
                 CardBody {
                     name: self.b(FIELD_X, row(0.0), FIELD_W, CTRL_H),
                     call: self.b(FIELD_X, row(1.0), FIELD_W, CTRL_H),
-                    file: self.b(FIELD_X, row(2.0), 190.0, CTRL_H),
-                    remove: (k != 0).then(|| self.b(FIELD_X + 190.0 + 8.0, row(2.0), 110.0, CTRL_H)),
+                    file: self.b(FIELD_X, row(2.0), 170.0, CTRL_H),
+                    reset: self.b(FIELD_X + 170.0 + 8.0, row(2.0), FIELD_W - 170.0 - 8.0, CTRL_H),
+                    remove: (k != 0).then(|| self.b(FIELD_X, row(3.0), 130.0, CTRL_H)),
                 }
             });
             cards.push(Card { full: self.b(PAD, y, CARD_W, h), header, body });
@@ -517,6 +531,9 @@ impl SettingsForm {
         y += ROW;
         group(&mut y, "Система", &mut g);
         g.auto = y;
+        y += ROW;
+        group(&mut y, "Стандартные значения", &mut g);
+        g.reset = y;
         g
     }
 
@@ -551,6 +568,11 @@ impl SettingsForm {
     fn toggle_box_at(&self, row_y: f32) -> Box2 {
         let c = self.ctrl(row_y, W - PAD - 46.0, 46.0);
         Box2 { y: c.cy() - self.s(13.0), h: self.s(26.0), ..c }
+    }
+
+    /// Кнопка «Сбросить» на странице «Общие».
+    fn reset_general_box(&self) -> Box2 {
+        self.b(CTRL_X, self.general_rows().reset + (ROW - CTRL_H) / 2.0, W - PAD - CTRL_X, CTRL_H)
     }
 
     fn autostart_box(&self) -> Box2 {
@@ -635,6 +657,7 @@ impl SettingsForm {
                             }
                         }
                         v.push((body.file, Target::MenuFile));
+                        v.push((body.reset, Target::ResetMenu));
                         if let Some(r) = body.remove {
                             v.push((r, Target::RemoveMenu));
                         }
@@ -657,6 +680,7 @@ impl SettingsForm {
                 v.push((self.vault_box(), Target::Vault));
                 v.push((self.browse_box(), Target::Browse));
                 v.push((self.autostart_box(), Target::Autostart));
+                v.push((self.reset_general_box(), Target::ResetGeneral));
             }
             Page::About => {
                 let r = self.about_rows();
@@ -715,6 +739,9 @@ impl SettingsForm {
             return Cmd::None;
         };
         self.status = None;
+        if !matches!(t, Target::ResetMenu | Target::ResetGeneral) {
+            self.armed = None; // нажали что-то другое — подтверждение сброса снимается
+        }
         // щелчок мимо «Назначить» отменяет запись
         let stop = self.recording && t != Target::Assign;
         if stop {
@@ -800,6 +827,23 @@ impl SettingsForm {
             }
             Target::Browse => Cmd::Browse,
             Target::MenuFile => Cmd::OpenMenuFile(self.menu_id()),
+            Target::ResetMenu => {
+                if self.armed.take() == Some(Target::ResetMenu) {
+                    Cmd::ResetMenuFile(self.menu_id())
+                } else {
+                    self.armed = Some(Target::ResetMenu);
+                    Cmd::Redraw
+                }
+            }
+            Target::ResetGeneral => {
+                if self.armed.take() == Some(Target::ResetGeneral) {
+                    self.draft.reset_general();
+                    Cmd::ResetGeneral
+                } else {
+                    self.armed = Some(Target::ResetGeneral);
+                    Cmd::Redraw
+                }
+            }
             Target::AddMenu => {
                 self.add_menu();
                 Cmd::Redraw
@@ -1116,6 +1160,7 @@ impl SettingsForm {
             }
             // состав
             self.button(p, f, c, body.file, &format!("Открыть {}", self.file_name()), Target::MenuFile, false);
+            self.reset_button(p, f, c, body.reset, Target::ResetMenu, "Сбросить", "Точно сбросить?");
             if let Some(rb) = body.remove {
                 let hot = self.hot(Target::RemoveMenu);
                 let col = c.bad;
@@ -1169,6 +1214,22 @@ impl SettingsForm {
         // автозапуск
         label(p, "Запускать с Windows", rows.auto);
         self.toggle(p, c, self.autostart_box(), self.autostart, Target::Autostart);
+        // стандартные значения
+        label(p, "Общие настройки", rows.reset);
+        self.reset_button(p, f, c, self.reset_general_box(), Target::ResetGeneral, "Сбросить к стандартным", "Точно сбросить?");
+    }
+
+    /// Кнопка сброса: первое нажатие просит подтверждения, второе — выполняет.
+    #[allow(clippy::too_many_arguments)]
+    fn reset_button(&self, p: &mut Painter, f: &Fonts, c: &Ui, b: Box2, t: Target, label: &str, confirm: &str) {
+        if self.armed != Some(t) {
+            return self.button(p, f, c, b, label, t, false);
+        }
+        let hot = self.hot(t);
+        let col = c.bad;
+        p.fill_rrect(b.x, b.y, b.w, b.h, self.s(9.0), if hot { blend(c.bg, col, 0.3) } else { blend(c.bg, col, 0.15) }, 1.0);
+        p.stroke_rrect(b.x, b.y, b.w, b.h, self.s(9.0), col, 0.8, 1.2);
+        p.text(&f.regular, confirm, b.x + b.w / 2.0, b.cy(), self.s(13.0), col, Align::Center);
     }
 
     fn toggle(&self, p: &mut Painter, c: &Ui, tb: Box2, on: bool, t: Target) {
@@ -1340,6 +1401,7 @@ struct GeneralRows {
     sliders: [f32; 3],
     vault: f32,
     auto: f32,
+    reset: f32,
 }
 
 struct AboutRows {
@@ -1691,6 +1753,61 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn menu_reset_needs_a_second_click() {
+        let mut f = form();
+        let reset = f.cards().0[0].body.as_ref().unwrap().reset;
+        assert_eq!(click(&mut f, reset), Cmd::Redraw, "первое нажатие только просит подтверждения");
+        assert_eq!(f.armed, Some(Target::ResetMenu));
+        assert_eq!(click(&mut f, reset), Cmd::ResetMenuFile(0));
+        assert_eq!(f.armed, None, "после сброса подтверждение снято");
+    }
+
+    #[test]
+    fn any_other_click_cancels_the_reset() {
+        let mut f = form();
+        let reset = f.cards().0[0].body.as_ref().unwrap().reset;
+        click(&mut f, reset);
+        assert_eq!(f.armed, Some(Target::ResetMenu));
+        let tab = f.page_boxes()[1];
+        click(&mut f, tab); // ушли на другую страницу
+        assert_eq!(f.armed, None);
+        f.page = Page::Menus;
+        let reset = f.cards().0[0].body.as_ref().unwrap().reset;
+        assert_eq!(click(&mut f, reset), Cmd::Redraw, "после отмены снова нужно два нажатия");
+    }
+
+    #[test]
+    fn general_reset_restores_the_draft_to_defaults() {
+        let mut f = form();
+        f.page = Page::General;
+        f.draft.size_percent = 130;
+        f.draft.theme = ThemeMode::Dark;
+        f.draft.ignore_fullscreen = false;
+        f.draft.vault = "D:/V".into();
+        let b = f.reset_general_box();
+        assert_eq!(click(&mut f, b), Cmd::Redraw);
+        assert_eq!(f.draft.size_percent, 130, "до подтверждения ничего не меняется");
+        assert_eq!(click(&mut f, b), Cmd::ResetGeneral);
+        let d = Settings::default();
+        assert_eq!((f.draft.size_percent, f.draft.theme, f.draft.ignore_fullscreen), (d.size_percent, d.theme, true));
+        assert_eq!(f.draft.vault, "D:/V", "папка заметок — выбор человека, сброс её не трогает");
+    }
+
+    #[test]
+    fn reset_button_is_in_every_open_card_and_inside_the_window() {
+        let mut f = SettingsForm::new(Settings::default(), false, 1.0);
+        for k in 0..f.n_menus() {
+            f.selected = k;
+            let (cards, _) = f.cards();
+            let body = cards[k].body.as_ref().unwrap();
+            assert!(body.reset.w > 60.0, "кнопка читается: {}", body.reset.w);
+            assert!(body.reset.x >= body.file.x + body.file.w, "не налезает на «Открыть»");
+            let (_, h) = f.size();
+            assert!(cards[k].full.y + cards[k].full.h < h as f32, "карточка помещается в окно");
         }
     }
 }
