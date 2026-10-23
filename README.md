@@ -110,7 +110,7 @@ apps:                   # своё меню, пока активно окно э
 
 * **Действия:** `keys`, `text`, `run` (имя как в «Выполнить» или путь; `args` строкой или списком,
   `cwd`, `admin`), `open` (ссылка, файл, папка, протокол), `media`, `volume`,
-  `action: explorer | note | settings | screenshot-window | back | forward`, `enabled_if: desktop-prev | desktop-next`, `steps` (цепочка с `wait`; паузы отсчитывает таймер, меню и трей не зависают).
+  `action: explorer | note | settings | screenshot-window | back | forward`, `enabled_if: desktop-prev | desktop-next | never` (`never` — кнопка всегда приглушена: общий файл меню на нескольких компьютерах так отключает «себя»), `steps` (цепочка с `wait`; паузы отсчитывает таймер, меню и трей не зависают).
 * **Иконки:** встроенные (список в файле), свой `.svg` / `.png` (путь от папки файла или полный;
   SVG — любой сложности), `{ from: путь }` — иконка любой программы или файла, `none`. Без `icon`:
   у `run` — иконка программы, у остальных — первая буква подписи.

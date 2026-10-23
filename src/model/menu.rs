@@ -27,10 +27,13 @@ pub enum Flag {
     DesktopPrev,
     /// Есть рабочий стол правее текущего.
     DesktopNext,
+    /// Никогда не включено: кнопка всегда приглушена. Нужна общему файлу меню, который лежит на
+    /// нескольких компьютерах и на каждом отключает «себя» (`enabled_if: never`).
+    Never,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 3] = [Flag::Media, Flag::DesktopPrev, Flag::DesktopNext];
+    pub const ALL: [Flag; 4] = [Flag::Media, Flag::DesktopPrev, Flag::DesktopNext, Flag::Never];
 
     fn bit(self) -> u32 {
         1 << self as u32
@@ -41,6 +44,7 @@ impl Flag {
             Flag::Media => "media",
             Flag::DesktopPrev => "desktop-prev",
             Flag::DesktopNext => "desktop-next",
+            Flag::Never => "never",
         }
     }
 
@@ -53,7 +57,7 @@ impl Flag {
         match (self, on) {
             (Flag::Media, true) => "играет",
             (Flag::Media, false) => "выкл",
-            (Flag::DesktopPrev | Flag::DesktopNext, _) => "",
+            (Flag::DesktopPrev | Flag::DesktopNext | Flag::Never, _) => "",
         }
     }
 }
